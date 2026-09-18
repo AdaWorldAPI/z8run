@@ -197,6 +197,19 @@ pub trait NodeExecutorFactory: Send + Sync {
     fn node_type(&self) -> &str;
 }
 
+/// Returns the longest prefix of `s` that is at most `max` bytes and ends on
+/// a UTF-8 character boundary, so slicing never splits a multibyte char (A-07).
+fn truncate_utf8(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 /// Truncate a JSON payload for UI preview (max ~500 chars).
 /// Deeply nested objects get replaced with a summary.
 fn truncate_payload(value: &serde_json::Value) -> serde_json::Value {
@@ -212,7 +225,7 @@ fn truncate_payload(value: &serde_json::Value) -> serde_json::Value {
             if vs.len() > 100 {
                 preview.insert(
                     k.clone(),
-                    serde_json::Value::String(format!("{}...", &vs[..97])),
+                    serde_json::Value::String(format!("{}...", truncate_utf8(&vs, 97))),
                 );
             } else {
                 preview.insert(k.clone(), v.clone());
@@ -227,7 +240,7 @@ fn truncate_payload(value: &serde_json::Value) -> serde_json::Value {
         serde_json::Value::Object(preview)
     } else {
         // For non-objects, just truncate the string
-        serde_json::Value::String(format!("{}...", &s[..497]))
+        serde_json::Value::String(format!("{}...", truncate_utf8(&s, 497)))
     }
 }
 
@@ -824,5 +837,26 @@ mod tests {
             from_c, 2,
             "fan-in node forwarded {from_c} of 2 inputs (must process every message)"
         );
+    }
+
+    /// A-07: previews are cut by byte index; a multibyte character straddling
+    /// the cut must not panic. Covers both thresholds (non-object at 497,
+    /// object values at 97).
+    #[test]
+    fn truncate_payload_handles_multibyte_at_both_thresholds() {
+        // Non-object: `"` + 495 ASCII puts the 2-byte 'é' across byte 497.
+        let long = serde_json::Value::String(format!("{}é{}", "a".repeat(495), "b".repeat(100)));
+        let out = truncate_payload(&long);
+        let text = out.as_str().expect("string preview");
+        assert!(text.ends_with("..."));
+        assert!(text.len() <= 500);
+
+        // Object value: `"` + 95 ASCII puts the 4-byte emoji across byte 97.
+        let value = format!("{}\u{1F600}{}", "a".repeat(95), "b".repeat(500));
+        let obj = serde_json::json!({ "k": value });
+        let out = truncate_payload(&obj);
+        let preview = out["k"].as_str().expect("truncated value");
+        assert!(preview.ends_with("..."));
+        assert!(preview.len() <= 100);
     }
 }
