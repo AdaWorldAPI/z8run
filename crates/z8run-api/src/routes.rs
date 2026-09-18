@@ -1107,6 +1107,16 @@ async fn hook_handler(
         return rejection;
     }
 
+    // Bound concurrent executions per flow (A-06). The slot is held until this
+    // handler returns; by then the execution has finished or been cancelled.
+    let Some(_slot) = state.hook_limits.try_acquire(flow_id) else {
+        warn!(flow_id = %flow_id, "Hook rejected: flow at its concurrent execution limit");
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({"error": "Too many concurrent executions for this flow"})),
+        );
+    };
+
     // Build executable flow (vault refs resolved under the flow owner)
     let (mut exec_flow, id_map) = match canvas_to_flow(&snapshot, owner_id, state.vault.as_ref())
         .await
@@ -1207,7 +1217,8 @@ async fn await_flow_response(
     rx: tokio::sync::oneshot::Receiver<z8run_core::nodes::http_out::WebhookResponse>,
     state: &Arc<AppState>,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    match tokio::time::timeout(std::time::Duration::from_secs(10), rx).await {
+    let timeout = state.hook_limits.timeout;
+    match tokio::time::timeout(timeout, rx).await {
         Ok(Ok(response)) => {
             info!(
                 flow_id = %flow_id,
@@ -1226,11 +1237,17 @@ async fn await_flow_response(
             )
         }
         Err(_) => {
-            warn!(flow_id = %flow_id, "Flow timed out after 10 seconds");
+            // The caller is gone: stop the execution instead of letting it keep
+            // spending CPU, network and third-party quota (A-06).
+            let cancelled = state.engine.cancel_execution(trace_id).await;
+            warn!(flow_id = %flow_id, timeout_secs = timeout.as_secs(), cancelled,
+                "Hook timed out; execution cancelled");
             state.webhook_responders.write().await.remove(&trace_id);
             (
                 StatusCode::GATEWAY_TIMEOUT,
-                Json(serde_json::json!({"error": "Flow execution timed out (10s)"})),
+                Json(serde_json::json!({
+                    "error": format!("Flow execution timed out ({}s)", timeout.as_secs())
+                })),
             )
         }
     }

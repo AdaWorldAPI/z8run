@@ -1,5 +1,5 @@
 //! HTTP-level regression tests for the hook and flow-ownership fixes from the
-//! 2026-09-18 security audit (A-01, A-02, A-05).
+//! 2026-09-18 security audit (A-01, A-02, A-05, A-06, A-09).
 //!
 //! The whole scenario runs in ONE test on ONE `AppState`: the `http-out`
 //! responder map and the rate limiters are process-wide `OnceLock`s, so only
@@ -17,7 +17,7 @@ use z8run_api::{build_router, state::AppState};
 use z8run_storage::credential_vault::SqliteCredentialVault;
 use z8run_storage::sqlite::SqliteStorage;
 
-async fn test_app() -> Router {
+async fn test_app() -> (Router, Arc<AppState>) {
     // 0 disables a limiter (SEC-006); keep the suite from being throttled.
     for var in [
         "Z8_RATE_LIMIT_API",
@@ -26,6 +26,10 @@ async fn test_app() -> Router {
     ] {
         std::env::set_var(var, "0");
     }
+    // Tight hook limits so A-06 is observable quickly (read in AppState::new).
+    std::env::set_var("Z8_HOOK_MAX_BODY_BYTES", "4096");
+    std::env::set_var("Z8_HOOK_MAX_CONCURRENCY", "1");
+    std::env::set_var("Z8_HOOK_TIMEOUT_SECS", "1");
 
     // A single shared connection keeps the in-memory database alive.
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
@@ -46,7 +50,7 @@ async fn test_app() -> Router {
         0,
     ));
     z8run_core::nodes::register_builtin_nodes(&state.engine).await;
-    build_router(state)
+    (build_router(Arc::clone(&state)), state)
 }
 
 /// Sends a request and returns `(status, json body or Null)`.
@@ -220,7 +224,7 @@ fn two_trigger_canvas(open_status: u16) -> (Vec<Value>, Vec<Value>) {
 
 #[tokio::test]
 async fn hook_and_flow_ownership_security() {
-    let app = test_app().await;
+    let (app, state) = test_app().await;
     let alice = register(&app, "alice").await;
     let bob = register(&app, "bob").await;
 
@@ -272,6 +276,69 @@ async fn hook_and_flow_ownership_security() {
         hook(&app, &flow, "/open", None).await.as_u16(),
         299,
         "after redeploy the new version runs"
+    );
+
+    // ── A-06: bounded body, bounded concurrency, and cancellation on timeout.
+    let big = "x".repeat(8 * 1024);
+    let (status, _) = send(
+        &app,
+        "POST",
+        &format!("/hook/{flow}/open"),
+        None,
+        Some(json!({ "blob": big })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "body over the hook limit"
+    );
+
+    // A slow flow: trigger -> 3s delay -> http-out. With a 1s hook timeout the
+    // caller gets 504 and the execution must be cancelled, not left running.
+    let slow = create_flow(
+        &app,
+        &alice,
+        vec![
+            trigger("t_slow", "/slow", json!({"authType": "none"})),
+            json!({"id": "wait", "data": {"type": "delay", "label": "wait", "config": {"delayMs": 3000}}}),
+            http_out("out_slow", 200),
+        ],
+        vec![edge("t_slow", "wait"), edge("wait", "out_slow")],
+    )
+    .await;
+    assert_eq!(deploy(&app, &alice, &slow).await.0, StatusCode::OK);
+    let slow_id: uuid::Uuid = slow.parse().unwrap();
+
+    assert_eq!(
+        hook(&app, &slow, "/slow", None).await,
+        StatusCode::GATEWAY_TIMEOUT
+    );
+    let still_running = async {
+        for _ in 0..40 {
+            if !state.engine.active_flow_ids().await.contains(&slow_id) {
+                return false;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        true
+    }
+    .await;
+    assert!(
+        !still_running,
+        "a timed-out hook execution must be cancelled, not keep running for 3s"
+    );
+
+    // Concurrency limit 1: while one slow call holds the slot, a second is 429.
+    let (first, second) = tokio::join!(hook(&app, &slow, "/slow", None), async {
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        hook(&app, &slow, "/slow", None).await
+    });
+    assert_eq!(first, StatusCode::GATEWAY_TIMEOUT);
+    assert_eq!(
+        second,
+        StatusCode::TOO_MANY_REQUESTS,
+        "second concurrent call is rejected"
     );
 
     // ── A-02: another user can neither stop nor probe the flow.

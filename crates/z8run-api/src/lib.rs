@@ -7,6 +7,7 @@
 pub mod auth;
 pub mod error;
 pub mod execution_recorder;
+pub mod hook_limits;
 pub mod rate_limit;
 pub mod routes;
 pub mod state;
@@ -97,7 +98,13 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )
         .nest(
             "/hook",
-            routes::hook_routes().layer(axum::middleware::from_fn(rate_limit::hook_rate_limit)),
+            routes::hook_routes()
+                // Public entry point: cap the body explicitly (A-06); larger
+                // requests get 413 before the handler runs.
+                .layer(axum::extract::DefaultBodyLimit::max(
+                    state.hook_limits.max_body_bytes,
+                ))
+                .layer(axum::middleware::from_fn(rate_limit::hook_rate_limit)),
         )
         .nest("/ws", ws::ws_routes())
         .layer(build_cors_layer())

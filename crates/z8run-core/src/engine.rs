@@ -166,19 +166,22 @@ impl CancelHandle {
     }
 }
 
-/// Execution state of an active flow.
+/// Execution state of one running execution of a flow.
 struct ActiveFlow {
+    /// Flow this execution belongs to.
+    flow_id: Uuid,
     _flow: Flow,
     _plan: ExecutionPlan,
     status: FlowStatus,
-    _trace_id: Uuid,
     /// Handle used by [`FlowEngine::stop`] to cancel the running driver task.
     cancel: CancelHandle,
 }
 
 /// z8run flow execution engine.
 pub struct FlowEngine {
-    /// Active flows currently executing.
+    /// Executions in progress, keyed by trace id. A flow can run several times
+    /// concurrently (e.g. parallel webhook calls), so keying by flow id would
+    /// let executions overwrite and remove each other's entries.
     active_flows: Arc<RwLock<HashMap<Uuid, ActiveFlow>>>,
     /// Broadcast channel to emit engine events.
     event_tx: broadcast::Sender<EngineEvent>,
@@ -421,12 +424,12 @@ impl FlowEngine {
         {
             let mut active = self.active_flows.write().await;
             active.insert(
-                flow_id,
+                trace_id,
                 ActiveFlow {
+                    flow_id,
                     _flow: flow.clone(),
                     _plan: plan.clone(),
                     status: FlowStatus::Running,
-                    _trace_id: trace_id,
                     cancel: cancel.clone(),
                 },
             );
@@ -464,7 +467,9 @@ impl FlowEngine {
                             trace_id,
                             duration_ms,
                         });
-                        engine.set_flow_status(flow_id, FlowStatus::Completed).await;
+                        engine
+                            .set_execution_status(trace_id, FlowStatus::Completed)
+                            .await;
                     }
                     Err(e) => {
                         error!(error = %e, "Flow failed");
@@ -473,7 +478,9 @@ impl FlowEngine {
                             trace_id,
                             error: e.to_string(),
                         });
-                        engine.set_flow_status(flow_id, FlowStatus::Error).await;
+                        engine
+                            .set_execution_status(trace_id, FlowStatus::Error)
+                            .await;
                     }
                 }
             }
@@ -483,7 +490,7 @@ impl FlowEngine {
             // broadcast. Remove it from the active set so the map does not grow
             // unbounded and `active_flow_ids()` reports only genuinely-active
             // flows.
-            engine.remove_flow(flow_id).await;
+            engine.remove_execution(trace_id).await;
         });
 
         Ok(trace_id)
@@ -715,15 +722,32 @@ impl FlowEngine {
     /// nodes and aborts any in-flight ones (FUNC-004). The driver task then
     /// removes the flow from the active set (FUNC-005).
     pub async fn stop(&self, flow_id: Uuid) -> Z8Result<()> {
-        // Trigger cancellation while holding only a read lock; `cancel()` just
-        // flips an atomic flag and notifies, so it cannot deadlock against the
-        // driver's removal (which takes a write lock afterwards).
-        if let Some(af) = self.active_flows.read().await.get(&flow_id) {
-            af.cancel.cancel();
+        // Cancel EVERY in-flight execution of this flow, not just the latest.
+        // `cancel()` only flips an atomic flag and notifies, so holding the
+        // write lock here cannot deadlock against the driver's removal.
+        let mut cancelled = 0;
+        for af in self.active_flows.write().await.values_mut() {
+            if af.flow_id == flow_id {
+                af.cancel.cancel();
+                af.status = FlowStatus::Stopped;
+                cancelled += 1;
+            }
         }
-        self.set_flow_status(flow_id, FlowStatus::Stopped).await;
-        info!(flow_id = %flow_id, "Flow stopped");
+        info!(flow_id = %flow_id, executions = cancelled, "Flow stopped");
         Ok(())
+    }
+
+    /// Cancels a single execution by trace id (e.g. when its webhook caller
+    /// timed out). Returns `false` if it had already finished.
+    pub async fn cancel_execution(&self, trace_id: Uuid) -> bool {
+        match self.active_flows.write().await.get_mut(&trace_id) {
+            Some(af) => {
+                af.cancel.cancel();
+                af.status = FlowStatus::Stopped;
+                true
+            }
+            None => false,
+        }
     }
 
     /// Returns the state of an active flow.
@@ -731,17 +755,20 @@ impl FlowEngine {
         self.active_flows
             .read()
             .await
-            .get(&flow_id)
+            .values()
+            .find(|af| af.flow_id == flow_id)
             .map(|af| af.status.clone())
     }
 
-    /// Returns the IDs of all active flows.
+    /// Returns the IDs of flows with at least one execution in progress.
     pub async fn active_flow_ids(&self) -> Vec<Uuid> {
-        self.active_flows.read().await.keys().cloned().collect()
+        let active = self.active_flows.read().await;
+        let ids: std::collections::HashSet<Uuid> = active.values().map(|af| af.flow_id).collect();
+        ids.into_iter().collect()
     }
 
-    async fn set_flow_status(&self, flow_id: Uuid, status: FlowStatus) {
-        if let Some(af) = self.active_flows.write().await.get_mut(&flow_id) {
+    async fn set_execution_status(&self, trace_id: Uuid, status: FlowStatus) {
+        if let Some(af) = self.active_flows.write().await.get_mut(&trace_id) {
             af.status = status;
         }
     }
@@ -749,8 +776,8 @@ impl FlowEngine {
     /// Removes a flow from the active set once it has reached a terminal state
     /// (FUNC-005). Called by the driver task after all terminal events have
     /// been emitted.
-    async fn remove_flow(&self, flow_id: Uuid) {
-        self.active_flows.write().await.remove(&flow_id);
+    async fn remove_execution(&self, trace_id: Uuid) {
+        self.active_flows.write().await.remove(&trace_id);
     }
 
     fn clone_refs(&self) -> Self {
