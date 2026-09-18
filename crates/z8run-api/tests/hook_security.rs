@@ -78,22 +78,52 @@ async fn send(
     )
 }
 
-/// Registers a user and returns their bearer token.
+/// Registers a user and returns their session token.
+///
+/// The token is only issued in the HttpOnly `z8_session` cookie (A-09), so it
+/// is read from `Set-Cookie`; the JSON body must not carry it.
 async fn register(app: &Router, name: &str) -> String {
-    let (status, body) = send(
-        app,
-        "POST",
-        "/auth/register",
-        None,
-        Some(json!({
-            "email": format!("{name}@example.com"),
-            "username": name,
-            "password": "password123",
-        })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "register {name}: {body}");
-    body["token"].as_str().unwrap().to_string()
+    let req = Request::builder()
+        .method("POST")
+        .uri("/auth/register")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "email": format!("{name}@example.com"),
+                "username": name,
+                "password": "password123",
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK, "register {name}");
+
+    let cookie = res
+        .headers()
+        .get("set-cookie")
+        .and_then(|v| v.to_str().ok())
+        .expect("session cookie")
+        .to_string();
+    assert!(
+        cookie.contains("HttpOnly"),
+        "session cookie must be HttpOnly"
+    );
+
+    let bytes = to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(
+        body.get("token").is_none(),
+        "the JWT must not be exposed in the response body: {body}"
+    );
+    assert_eq!(body["user"]["username"], name);
+
+    cookie
+        .split(';')
+        .next()
+        .and_then(|kv| kv.strip_prefix("z8_session="))
+        .expect("z8_session value")
+        .to_string()
 }
 
 fn trigger(id: &str, path: &str, auth: Value) -> Value {

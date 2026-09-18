@@ -210,9 +210,90 @@ fn truncate_utf8(s: &str, max: usize) -> &str {
     &s[..end]
 }
 
+/// Keys whose values are secrets and must never appear in previews. Compared
+/// case-insensitively with `-` normalized to `_`, by EXACT name so that fields
+/// like `total_tokens` or `max_tokens` are not over-redacted.
+const SENSITIVE_PREVIEW_KEYS: &[&str] = &[
+    "authorization",
+    "proxy_authorization",
+    "cookie",
+    "set_cookie",
+    "x_api_key",
+    "api_key",
+    "apikey",
+    "x_auth_token",
+    "auth_token",
+    "authtoken",
+    "password",
+    "passwd",
+    "secret",
+    "client_secret",
+    "token",
+    "access_token",
+    "refresh_token",
+    "id_token",
+    "private_key",
+    "x_signature",
+    "x_hub_signature",
+    "x_hub_signature_256",
+];
+
+fn is_sensitive_key(key: &str) -> bool {
+    let normalized = key.to_ascii_lowercase().replace('-', "_");
+    SENSITIVE_PREVIEW_KEYS.contains(&normalized.as_str())
+}
+
+/// `scheme://user:password@` → `scheme://user:***@`.
+static URL_USERINFO: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"(?i)\b([a-z][a-z0-9+.-]*://[^\s/:@]+):[^\s/@]+@").unwrap()
+});
+
+/// Values of secret-bearing query parameters (`?token=...&api_key=...`).
+static SECRET_QUERY_PARAM: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(
+        r"(?i)([?&](?:token|access_token|api_key|apikey|key|secret|password|signature|sig|auth)=)[^&\s#]*",
+    )
+    .unwrap()
+});
+
+/// Returns a copy of `value` with secrets removed, for previews only (A-09).
+///
+/// Previews reach the UI through engine events, so headers such as
+/// `Authorization`/`Cookie` and credentials embedded in URLs are masked here.
+/// The functional payload that nodes pass along is never modified.
+fn redact_preview(value: &serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match value {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(k, v)| {
+                    let redacted = if is_sensitive_key(k) {
+                        Value::String("[REDACTED]".to_string())
+                    } else {
+                        redact_preview(v)
+                    };
+                    (k.clone(), redacted)
+                })
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.iter().map(redact_preview).collect()),
+        Value::String(s) => {
+            let s = URL_USERINFO.replace_all(s, "$1:***@");
+            Value::String(SECRET_QUERY_PARAM.replace_all(&s, "$1***").into_owned())
+        }
+        other => other.clone(),
+    }
+}
+
+/// Builds the UI preview of a payload: secrets redacted, then size-bounded.
+fn truncate_payload(value: &serde_json::Value) -> serde_json::Value {
+    let redacted = redact_preview(value);
+    truncate_redacted(&redacted)
+}
+
 /// Truncate a JSON payload for UI preview (max ~500 chars).
 /// Deeply nested objects get replaced with a summary.
-fn truncate_payload(value: &serde_json::Value) -> serde_json::Value {
+fn truncate_redacted(value: &serde_json::Value) -> serde_json::Value {
     let s = value.to_string();
     if s.len() <= 500 {
         return value.clone();
@@ -858,5 +939,38 @@ mod tests {
         let preview = out["k"].as_str().expect("truncated value");
         assert!(preview.ends_with("..."));
         assert!(preview.len() <= 100);
+    }
+
+    /// A-09: previews shown in the UI must not leak credentials, but must keep
+    /// ordinary data (including look-alike keys such as `total_tokens`).
+    #[test]
+    fn preview_redacts_secrets_but_keeps_data() {
+        let payload = serde_json::json!({
+            "headers": {
+                "Authorization": "Bearer abc",
+                "cookie": "z8_session=xyz",
+                "X-Api-Key": "k-123",
+                "accept": "application/json"
+            },
+            "url": "https://bob:hunter2@api.example.com/v1?token=t0k&q=search",
+            "usage": { "total_tokens": 42, "max_tokens": 100 },
+            "items": [{ "password": "p", "name": "keep" }]
+        });
+
+        let preview = truncate_payload(&payload);
+        let text = preview.to_string();
+        for secret in ["abc", "xyz", "k-123", "hunter2", "t0k", "\"p\""] {
+            assert!(!text.contains(secret), "leaked {secret}: {text}");
+        }
+        assert_eq!(preview["headers"]["accept"], "application/json");
+        assert_eq!(preview["usage"]["total_tokens"], 42);
+        assert_eq!(preview["items"][0]["name"], "keep");
+        assert_eq!(
+            preview["url"],
+            "https://bob:***@api.example.com/v1?token=***&q=search"
+        );
+
+        // The functional payload is untouched.
+        assert_eq!(payload["headers"]["Authorization"], "Bearer abc");
     }
 }
