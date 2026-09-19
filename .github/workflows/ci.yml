@@ -3,6 +3,9 @@ name: CI
 on:
   pull_request:
     branches: [main]
+  # Manual runs (Actions -> CI -> Run workflow, or gh workflow run ci.yml),
+  # since pushes to main don't trigger CI.
+  workflow_dispatch:
 
 permissions:
   contents: read
