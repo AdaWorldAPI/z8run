@@ -11,6 +11,7 @@ pub mod hook_limits;
 pub mod rate_limit;
 pub mod routes;
 pub mod state;
+pub mod ui;
 pub mod ws;
 
 use axum::http::{header, HeaderValue, Method};
@@ -85,7 +86,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     // Public API routes (health, info) - no auth required
     let public_api = routes::public_routes();
 
-    Router::new()
+    let router = Router::new()
         .nest(
             "/api/v1",
             protected_api
@@ -106,7 +107,13 @@ pub fn build_router(state: Arc<AppState>) -> Router {
                 ))
                 .layer(axum::middleware::from_fn(rate_limit::hook_rate_limit)),
         )
-        .nest("/ws", ws::ws_routes())
+        .nest("/ws", ws::ws_routes());
+
+    // Standalone binaries serve the web editor themselves (Docker uses Nginx).
+    #[cfg(feature = "embed-ui")]
+    let router = router.fallback(ui::serve);
+
+    router
         .layer(build_cors_layer())
         .layer(TraceLayer::new_for_http())
         .with_state(state)

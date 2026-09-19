@@ -127,6 +127,14 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Host to show in the editor URL: a wildcard bind is reachable locally.
+fn display_host(bind: &str) -> &str {
+    match bind {
+        "0.0.0.0" | "::" | "[::]" => "localhost",
+        other => other,
+    }
+}
+
 /// The well-known placeholder secret shipped in `.env.example`.
 const WEAK_PLACEHOLDER_SECRET: &str = "change-me-in-production";
 
@@ -308,7 +316,11 @@ async fn cmd_serve(
     let addr = format!("{}:{}", bind, port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!(address = %addr, "Server ready");
-    tracing::info!("Editor: http://{}:{}", bind, port);
+    if z8run_api::ui::is_embedded() {
+        tracing::info!("Editor: http://{}:{}", display_host(&bind), port);
+    } else {
+        tracing::info!("API only: this build does not include the web editor (feature embed-ui)");
+    }
 
     // Serve with connection info so per-IP rate limiting can read the real TCP
     // peer address (see z8run_api::rate_limit) instead of trusting spoofable
