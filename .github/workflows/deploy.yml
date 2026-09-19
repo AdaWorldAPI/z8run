@@ -19,7 +19,7 @@ env:
 jobs:
   build-and-push:
     name: Build & Push Images
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
       contents: read
@@ -71,7 +71,7 @@ jobs:
   deploy:
     name: Deploy to Server
     needs: build-and-push
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: production
     permissions:

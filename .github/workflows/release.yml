@@ -37,7 +37,7 @@ jobs:
   # ── Validate the tag ───────────────────────────────────
   check:
     name: Check inputs
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Tag must look like vMAJOR.MINOR.PATCH
         run: |
@@ -51,7 +51,7 @@ jobs:
     name: Docker Images
     needs: check
     if: inputs.docker
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - name: Checkout code
@@ -107,10 +107,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Pinned: the binary links against the runner's glibc and then
-          # needs that version or newer. ubuntu-latest moves to Ubuntu 26
-          # on 2026-10-19, which would stop it running on 22.04/24.04 and
-          # Debian 12. Keep this on the oldest supported LTS runner.
+          # The binary links against the runner's glibc and then needs that
+          # version or newer: building on a newer Ubuntu would stop it
+          # running on 22.04/24.04 and Debian 12. Keep this on the oldest
+          # supported LTS runner, even when the other jobs move on.
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-24.04
             artifact: z8run-linux-x86_64
@@ -134,7 +134,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version-file: .node-version
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
@@ -210,7 +210,7 @@ jobs:
     name: Publish to crates.io
     needs: check
     if: inputs.crates
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Checkout code
@@ -256,7 +256,7 @@ jobs:
     needs: [binaries, docker, crates]
     # docker/crates may be skipped; any failure stops the release.
     if: ${{ !cancelled() && needs.binaries.result == 'success' && !contains(needs.*.result, 'failure') }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v8
