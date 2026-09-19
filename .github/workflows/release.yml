@@ -245,7 +245,7 @@ jobs:
             echo "⚠ $crate failed after 3 attempts, continuing..."
           }
 
-          for crate in z8run-core z8run-protocol z8run-storage z8run-runtime z8run-api z8run-cli; do
+          for crate in z8run-core z8run-storage z8run-runtime z8run-api z8run-cli; do
             publish_crate "$crate"
             sleep 30
           done

@@ -47,7 +47,6 @@ This project follows our [Code of Conduct](CODE_OF_CONDUCT.md). By participating
 z8run/
 ├── crates/
 │   ├── z8run-core       # Flow engine, DAG scheduler, built-in nodes
-│   ├── z8run-protocol   # Binary WebSocket protocol
 │   ├── z8run-storage    # SQLite / PostgreSQL persistence
 │   ├── z8run-runtime    # WASM plugin sandbox (wasmtime)
 │   └── z8run-api        # REST + WebSocket server (Axum)

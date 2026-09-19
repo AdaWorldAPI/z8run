@@ -16,7 +16,6 @@ embed-ui = []
 
 [dependencies]
 z8run-core = { workspace = true }
-z8run-protocol = { workspace = true }
 z8run-storage = { workspace = true }
 z8run-runtime = { workspace = true }
 tokio = { workspace = true }

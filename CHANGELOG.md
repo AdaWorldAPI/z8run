@@ -61,6 +61,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/) and this 
 - WASM plugins run with a CPU budget, a time limit and an enforced memory cap (`Z8_PLUGIN_FUEL`, `Z8_PLUGIN_TIMEOUT_MS`, `Z8_PLUGIN_MAX_MEMORY_MB`), off the async runtime; a manifest can no longer raise its own memory limit (A-10)
 
 ### Removed
+- `z8run-protocol` crate: its binary WebSocket format was never used (the WebSocket has always sent JSON), and it pulled in the unmaintained `bincode`. The README no longer lists a binary protocol
 - `bins/z8run-server` placeholder, superseded by `--features embed-ui`
 
 ---

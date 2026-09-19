@@ -52,7 +52,6 @@ z8run is an open-source visual flow engine built from the ground up in **Rust** 
 | Self-hosted | Yes | Yes | Yes |
 | WASM plugins | Yes | No | No |
 | AI nodes (LLM, embeddings, agents) | 12 built-in | Community | Limited |
-| Binary protocol (WebSocket) | Yes | JSON | JSON |
 | Credential vault (AES-256-GCM) | Built-in | Separate | Built-in |
 | Single binary deploy | Yes | No | No |
 | Open source | Apache-2.0 / MIT | Apache-2.0 | Sustainable Use |
@@ -174,7 +173,6 @@ z8run is organized as a Rust workspace with focused crates:
 z8run/
 ├── crates/
 │   ├── z8run-core       # Flow engine, DAG validation, scheduler, 39 built-in nodes
-│   ├── z8run-protocol   # Binary WebSocket protocol (11-byte header)
 │   ├── z8run-storage    # SQLite / PostgreSQL persistence layer
 │   ├── z8run-runtime    # WASM plugin sandbox (wasmtime)
 │   └── z8run-api        # REST + WebSocket server (Axum)
@@ -193,7 +191,7 @@ z8run/
 2. **Nodes** process messages and pass them to connected outputs
 3. **The scheduler** compiles flows into parallel execution plans using topological ordering
 4. **Plugins** run inside a WebAssembly sandbox with no network, filesystem or clock access, and with per-call CPU, time and memory limits
-5. **The protocol** uses a compact binary format over WebSockets for real-time editor sync
+5. **The editor** receives execution events live over a WebSocket (JSON), only for the flows its user owns
 
 ## CLI
 
@@ -284,7 +282,7 @@ outbound (egress) policy for flows, database node limits and webhook limits.
 
 ### WebSocket
 
-Connect to `ws://localhost:7700/ws/engine` for real-time communication using the z8run binary protocol.
+Connect to `ws://localhost:7700/ws/engine` to receive execution events as JSON messages (`flow_started`, `node_completed`, `flow_stopped`, ...). The connection is authenticated with the session cookie, and each user only receives events for their own flows.
 
 ## Built-in Nodes
 
@@ -307,7 +305,6 @@ z8run ships with 39 built-in nodes (the authoritative list is the `register_node
 ## Roadmap
 
 - [x] Core engine with DAG validation and topological scheduling
-- [x] Binary WebSocket protocol
 - [x] REST API (Axum 0.8)
 - [x] SQLite / PostgreSQL persistence
 - [x] Visual node editor (React Flow + Zustand + Tailwind)
