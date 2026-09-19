@@ -1,9 +1,10 @@
-import { assertFlowDetail } from "@/lib/validation";
-import type {
-  CreateFlowRequest,
-  CreateFlowResponse,
-  FlowListResponse,
-} from "@/types/flow";
+import {
+  assertCreatedFlow,
+  assertFlowDetail,
+  assertFlowList,
+  assertStartResponse,
+} from "@/lib/validation";
+import type { CreateFlowRequest } from "@/types/flow";
 import { api } from "./client";
 
 export interface SaveFlowRequest {
@@ -15,7 +16,7 @@ export interface SaveFlowRequest {
 }
 
 export const flowsApi = {
-  list: () => api.get("flows").json<FlowListResponse>(),
+  list: () => api.get("flows").json<unknown>().then(assertFlowList),
 
   // Validate at the boundary: the editor casts canvas_nodes/canvas_edges to
   // arrays and maps over them, so a malformed shape must fail fast here.
@@ -23,7 +24,7 @@ export const flowsApi = {
     api.get(`flows/${id}`).json<unknown>().then(assertFlowDetail),
 
   create: (data: CreateFlowRequest) =>
-    api.post("flows", { json: data }).json<CreateFlowResponse>(),
+    api.post("flows", { json: data }).json<unknown>().then(assertCreatedFlow),
 
   update: (id: string, data: SaveFlowRequest) =>
     api
@@ -33,13 +34,7 @@ export const flowsApi = {
   delete: (id: string) => api.delete(`flows/${id}`).json<{ deleted: string }>(),
 
   start: (id: string) =>
-    api.post(`flows/${id}/start`).json<{
-      flow_id: string;
-      trace_id: string;
-      status: string;
-      node_map: Record<string, string>;
-      routes?: { method: string; path: string }[];
-    }>(),
+    api.post(`flows/${id}/start`).json<unknown>().then(assertStartResponse),
 
   stop: (id: string) =>
     api.post(`flows/${id}/stop`).json<{ flow_id: string; status: string }>(),
@@ -50,5 +45,8 @@ export const flowsApi = {
       .json<{ z8run_version: string; export_format: number; flow: unknown }>(),
 
   import: (data: unknown) =>
-    api.post("flows/import", { json: data }).json<CreateFlowResponse>(),
+    api
+      .post("flows/import", { json: data })
+      .json<unknown>()
+      .then(assertCreatedFlow),
 };

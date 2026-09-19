@@ -1,3 +1,4 @@
+import { parseEngineEvent } from "@/lib/validation";
 import { useFlowStore } from "@/stores/flowStore";
 import { useEffect } from "react";
 import { create } from "zustand";
@@ -248,11 +249,11 @@ function doConnect() {
 
   socket.onmessage = (e) => {
     if (ws !== socket) return;
-    try {
-      const event: EngineEvent = JSON.parse(e.data);
+    const event = parseEngineEvent(e.data);
+    if (event) {
       useEngineStore.getState().addLog(event);
-    } catch {
-      // ignore malformed messages
+    } else {
+      console.warn("Ignored malformed engine event");
     }
   };
 

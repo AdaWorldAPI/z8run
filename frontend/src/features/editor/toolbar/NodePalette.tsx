@@ -49,6 +49,8 @@ function PaletteNode({ def }: { def: NodeDefinition }) {
 export function NodePalette() {
   const [search, setSearch] = useState("");
   const pluginDefinitions = usePluginStore((s) => s.definitions);
+  const pluginStatus = usePluginStore((s) => s.status);
+  const retryPlugins = usePluginStore((s) => s.load);
 
   const filtered = [...NODE_DEFINITIONS, ...pluginDefinitions].filter(
     (d) =>
@@ -114,6 +116,18 @@ export function NodePalette() {
         {grouped.length === 0 && (
           <div className="text-center text-xs text-slate-600 py-8">
             No nodes found
+          </div>
+        )}
+        {pluginStatus === "error" && (
+          <div className="flex items-center justify-between gap-2 px-2 py-1.5 text-[10px] text-slate-500">
+            <span>Plugins unavailable</span>
+            <button
+              type="button"
+              onClick={() => void retryPlugins()}
+              className="text-z8-400 hover:text-z8-300 underline"
+            >
+              Retry
+            </button>
           </div>
         )}
       </div>
