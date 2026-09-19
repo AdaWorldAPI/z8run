@@ -84,6 +84,16 @@ async fn load_and_register_plugin(
     engine: &FlowEngine,
     plugin: &RegisteredPlugin,
 ) -> Result<(), RuntimeError> {
+    // Built-in nodes are registered first. A plugin with the same name would
+    // silently replace one (say, http-request) for every flow on the server.
+    if engine.has_node_type(&plugin.manifest.name).await {
+        return Err(RuntimeError::Manifest(format!(
+            "node type '{}' is already registered (built-in or another plugin); \
+             rename the plugin",
+            plugin.manifest.name
+        )));
+    }
+
     // Load WASM bytes from disk
     let wasm_bytes = tokio::fs::read(&plugin.wasm_path)
         .await
