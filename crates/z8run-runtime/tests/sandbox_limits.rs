@@ -255,3 +255,37 @@ fn a_manifest_can_lower_but_not_raise_the_memory_limit() {
     };
     assert_eq!(SandboxConfig::for_plugin(&modest).memory_limit, 1024 * 1024);
 }
+
+/// R-06: calls share a bounded pool of slots. A call that can't get one
+/// within its plugin's time limit is refused instead of queueing forever,
+/// and gets in once the slot is free again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn plugin_calls_share_a_bounded_pool_of_slots() {
+    let pool = Arc::new(tokio::sync::Semaphore::new(1));
+    let factory = |timeout_ms: u64| {
+        WasmNodeFactory::new(
+            plugin("(call $spin)", ""),
+            limits(u64::MAX / 2, Duration::from_millis(timeout_ms), 16),
+            manifest(),
+        )
+        .unwrap()
+        .with_slots(Arc::clone(&pool))
+    };
+    let slow = factory(1500).create(serde_json::json!({})).await.unwrap();
+    let quick = factory(200).create(serde_json::json!({})).await.unwrap();
+
+    let slow_run = tokio::spawn(async move { slow.process(msg(serde_json::json!({}))).await });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // The slow call holds the only slot for ~1.5 s; the quick one waits at
+    // most 200 ms and is refused.
+    let refused = quick.process(msg(serde_json::json!({}))).await.unwrap_err();
+    assert!(refused.to_string().contains("slots are busy"), "{refused}");
+
+    let slow_err = slow_run.await.unwrap().unwrap_err();
+    assert!(slow_err.to_string().contains("time limit"), "{slow_err}");
+
+    // Slot free again: the quick call runs (and hits its own time limit).
+    let ran = quick.process(msg(serde_json::json!({}))).await.unwrap_err();
+    assert!(ran.to_string().contains("time limit"), "{ran}");
+}

@@ -8,17 +8,34 @@
 use crate::manifest::PluginManifest;
 use crate::sandbox::{SandboxConfig, WasmInstance, WasmSandbox};
 use crate::RuntimeError;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
+use tokio::sync::Semaphore;
 use tracing::{debug, warn};
 use wasmtime::Module;
 use z8run_core::engine::{NodeExecutor, NodeExecutorFactory};
 use z8run_core::error::{Z8Error, Z8Result};
 use z8run_core::message::FlowMessage;
 
+/// Plugin calls allowed to run at once across the whole process (R-06).
+/// Per-call limits bound each call; this bounds how many threads and how
+/// much memory all of them can take together. `Z8_PLUGIN_MAX_CONCURRENCY`,
+/// default: the number of CPU cores.
+static PROCESS_SLOTS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| {
+    let default = std::thread::available_parallelism().map_or(4, |n| n.get());
+    let slots = std::env::var("Z8_PLUGIN_MAX_CONCURRENCY")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(default);
+    Arc::new(Semaphore::new(slots))
+});
+
 /// A compiled plugin and the limits its instances run under.
 struct Plugin {
     sandbox: WasmSandbox,
     module: Module,
+    /// Shared call slots (the process-wide pool unless overridden).
+    slots: Arc<Semaphore>,
 }
 
 /// One node's instance, recreated after a failed call.
@@ -55,13 +72,35 @@ impl NodeState {
     }
 }
 
-/// Runs `call` against the node's instance on the blocking thread pool.
+/// Runs `call` against the node's instance on the blocking thread pool,
+/// once a process-wide call slot is free. Waiting longer than the plugin's
+/// own time limit fails instead of queueing without bound.
 async fn run_blocking<T: Send + 'static>(
     state: &Arc<Mutex<NodeState>>,
     call: impl FnOnce(&mut NodeState) -> Result<T, RuntimeError> + Send + 'static,
 ) -> Z8Result<T> {
+    let (slots, wait) = {
+        let guard = state.lock().unwrap_or_else(|e| e.into_inner());
+        (
+            Arc::clone(&guard.plugin.slots),
+            guard.plugin.sandbox.config().timeout,
+        )
+    };
+    let permit = match tokio::time::timeout(wait, slots.acquire_owned()).await {
+        Ok(Ok(permit)) => permit,
+        _ => {
+            let e = RuntimeError::LimitExceeded(
+                "all plugin call slots are busy (Z8_PLUGIN_MAX_CONCURRENCY)".to_string(),
+            );
+            warn!(error = %e, "WASM plugin call rejected");
+            return Err(Z8Error::Internal(e.to_string()));
+        }
+    };
     let state = Arc::clone(state);
     tokio::task::spawn_blocking(move || {
+        // Held until the call really ends, even if the caller stopped
+        // waiting: the thread and memory are in use until then.
+        let _permit = permit;
         let mut guard = state.lock().unwrap_or_else(|e| e.into_inner());
         call(&mut guard)
     })
@@ -172,9 +211,23 @@ impl WasmNodeFactory {
         let sandbox = WasmSandbox::new(sandbox_config)?;
         let module = sandbox.compile(&wasm_bytes)?;
         Ok(Self {
-            plugin: Arc::new(Plugin { sandbox, module }),
+            plugin: Arc::new(Plugin {
+                sandbox,
+                module,
+                slots: Arc::clone(&PROCESS_SLOTS),
+            }),
             manifest,
         })
+    }
+
+    /// Draws call slots from `slots` instead of the process-wide pool, e.g.
+    /// to give some plugins their own budget. Factories sharing the same
+    /// semaphore share the budget.
+    pub fn with_slots(mut self, slots: Arc<Semaphore>) -> Self {
+        let plugin = Arc::get_mut(&mut self.plugin)
+            .expect("called before any node was created from this factory");
+        plugin.slots = slots;
+        self
     }
 
     /// Creates a factory with the operator's limits, narrowed by the
