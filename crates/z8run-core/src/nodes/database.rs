@@ -34,6 +34,7 @@
 //! - Queries time out after `Z8_DB_QUERY_TIMEOUT_SECS` (default 30) and return
 //!   at most `Z8_DB_MAX_ROWS` rows (default 1000, `truncated: true` beyond).
 
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::LazyLock;
@@ -80,18 +81,58 @@ fn strict() -> bool {
     crate::egress::client().policy().mode() == EgressMode::Strict
 }
 
-/// Checks a network database server against the egress policy.
-async fn check_server(host: &str, port: u16, socket: Option<&PathBuf>) -> Result<(), String> {
+/// Checks a network database server against the egress policy and returns
+/// the vetted address to connect to (`None` for a Unix socket, allowed only
+/// in permissive mode).
+async fn resolve_server(
+    host: &str,
+    port: u16,
+    socket: Option<&PathBuf>,
+) -> Result<Option<IpAddr>, String> {
     if socket.is_some() || host.starts_with('/') {
         return if strict() {
             Err("Unix socket connections are blocked by the egress policy".to_string())
         } else {
-            Ok(())
+            Ok(None)
         };
     }
-    crate::egress::check_host(host, port)
+    let addrs = crate::egress::client()
+        .policy()
+        .resolve(host, port)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    Ok(addrs.first().map(|a| a.ip()))
+}
+
+/// The host a driver should connect to (R-01). Connecting to the vetted IP
+/// means a DNS answer that changes after the check can't redirect the
+/// connection. TLS that verifies the server name keeps the name: the
+/// certificate check already rejects any other server, and it needs it.
+fn pinned_host(original: &str, vetted: Option<IpAddr>, verifies_hostname: bool) -> String {
+    match vetted {
+        Some(ip) if !verifies_hostname => ip.to_string(),
+        _ => original.to_string(),
+    }
+}
+
+/// Server location for error output (R-04): type, host, port and database
+/// from the parsed options, never userinfo or query parameters.
+fn endpoint(db_type: &str, host: &str, port: u16, database: Option<&str>) -> String {
+    format!("{db_type}://{host}:{port}/{}", database.unwrap_or(""))
+}
+
+/// A connection error safe to put in the flow's output (R-04). Driver text
+/// can repeat connection settings, so only its category is kept, plus the
+/// server's own message for database errors (e.g. authentication failed).
+fn describe_connect_error(e: &sqlx::Error) -> String {
+    match e {
+        sqlx::Error::Database(db) => db.message().to_string(),
+        sqlx::Error::Io(io) => format!("network error: {}", io.kind()),
+        sqlx::Error::Tls(_) => "TLS negotiation failed".to_string(),
+        sqlx::Error::PoolTimedOut => "timed out connecting".to_string(),
+        sqlx::Error::Configuration(_) => "invalid connection settings".to_string(),
+        _ => "could not connect".to_string(),
+    }
 }
 
 /// Where a SQLite connection string points.
@@ -263,23 +304,6 @@ impl DatabaseNode {
             }
         }
     }
-
-    /// Returns a safe version of the connection string for error messages (no password).
-    fn safe_connection_info(&self) -> String {
-        if self.connection_string.is_empty() {
-            format!(
-                "{}://{}@{}:{}/{}",
-                self.db_type, self.user, self.host, self.port, self.database
-            )
-        } else {
-            // Mask everything between :// and @
-            self.connection_string
-                .split('@')
-                .next_back()
-                .unwrap_or("***")
-                .to_string()
-        }
-    }
 }
 
 #[async_trait::async_trait]
@@ -379,11 +403,31 @@ impl DatabaseNode {
     ) -> Z8Result<Vec<FlowMessage>> {
         let opts = match sqlx::postgres::PgConnectOptions::from_str(conn_str) {
             Ok(opts) => opts,
-            Err(e) => return error_output(msg, format!("Invalid PostgreSQL connection: {e}")),
+            Err(e) => {
+                return error_output(
+                    msg,
+                    format!(
+                        "Invalid PostgreSQL connection: {}",
+                        describe_connect_error(&e)
+                    ),
+                )
+            }
         };
-        if let Err(e) = check_server(opts.get_host(), opts.get_port(), opts.get_socket()).await {
-            return error_output(msg, e);
-        }
+        let where_ = endpoint(
+            "postgres",
+            opts.get_host(),
+            opts.get_port(),
+            opts.get_database(),
+        );
+        let vetted = match resolve_server(opts.get_host(), opts.get_port(), opts.get_socket()).await
+        {
+            Ok(ip) => ip,
+            Err(e) => return error_output(msg, e),
+        };
+        let verifies_hostname =
+            matches!(opts.get_ssl_mode(), sqlx::postgres::PgSslMode::VerifyFull);
+        let host = pinned_host(opts.get_host(), vetted, verifies_hostname);
+        let opts = opts.host(&host);
         // Also stop the query server-side if the client-side timeout fires.
         let opts = opts.options([(
             "statement_timeout",
@@ -399,8 +443,8 @@ impl DatabaseNode {
             Err(e) => {
                 error!(node = %self.name, error = %e, "PostgreSQL connection failed");
                 let err = serde_json::json!({
-                    "error": format!("PostgreSQL connection failed: {}", e),
-                    "connection": self.safe_connection_info(),
+                    "error": format!("PostgreSQL connection failed: {}", describe_connect_error(&e)),
+                    "connection": where_,
                 });
                 let out = msg.derive(msg.source_node, "error", err);
                 return Ok(vec![out]);
@@ -446,11 +490,30 @@ impl DatabaseNode {
         // MySQL uses ? for parameters instead of $1, $2, ...
         let opts = match sqlx::mysql::MySqlConnectOptions::from_str(conn_str) {
             Ok(opts) => opts,
-            Err(e) => return error_output(msg, format!("Invalid MySQL connection: {e}")),
+            Err(e) => {
+                return error_output(
+                    msg,
+                    format!("Invalid MySQL connection: {}", describe_connect_error(&e)),
+                )
+            }
         };
-        if let Err(e) = check_server(opts.get_host(), opts.get_port(), opts.get_socket()).await {
-            return error_output(msg, e);
-        }
+        let where_ = endpoint(
+            "mysql",
+            opts.get_host(),
+            opts.get_port(),
+            opts.get_database(),
+        );
+        let vetted = match resolve_server(opts.get_host(), opts.get_port(), opts.get_socket()).await
+        {
+            Ok(ip) => ip,
+            Err(e) => return error_output(msg, e),
+        };
+        let verifies_hostname = matches!(
+            opts.get_ssl_mode(),
+            sqlx::mysql::MySqlSslMode::VerifyIdentity
+        );
+        let host = pinned_host(opts.get_host(), vetted, verifies_hostname);
+        let opts = opts.host(&host);
         let pool = match sqlx::mysql::MySqlPoolOptions::new()
             .max_connections(2)
             .acquire_timeout(std::time::Duration::from_secs(5))
@@ -461,8 +524,8 @@ impl DatabaseNode {
             Err(e) => {
                 error!(node = %self.name, error = %e, "MySQL connection failed");
                 let err = serde_json::json!({
-                    "error": format!("MySQL connection failed: {}", e),
-                    "connection": self.safe_connection_info(),
+                    "error": format!("MySQL connection failed: {}", describe_connect_error(&e)),
+                    "connection": where_,
                 });
                 let out = msg.derive(msg.source_node, "error", err);
                 return Ok(vec![out]);
@@ -811,6 +874,60 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("z8-db-{}", uuid::Uuid::now_v7()));
         std::fs::create_dir_all(&dir).unwrap();
         dir.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn error_output_never_carries_credentials() {
+        use sqlx::postgres::PgConnectOptions;
+        // Password in userinfo, in the query string and percent-encoded.
+        let url = "postgres://admin:s3cr%40t@db.example.com:6543/app?password=other-secret&application_name=x";
+        let opts = PgConnectOptions::from_str(url).unwrap();
+        let shown = endpoint(
+            "postgres",
+            opts.get_host(),
+            opts.get_port(),
+            opts.get_database(),
+        );
+        assert_eq!(shown, "postgres://db.example.com:6543/app");
+
+        // sqlx repeats an invalid value in its error text; the output doesn't.
+        let bad = PgConnectOptions::from_str("postgres://u:p@h/db?sslmode=leaky-secret-value")
+            .unwrap_err();
+        assert!(
+            bad.to_string().contains("leaky-secret-value"),
+            "precondition: {bad}"
+        );
+        let described = describe_connect_error(&bad);
+        assert!(!described.contains("leaky-secret-value"), "{described}");
+
+        let io = sqlx::Error::Io(std::io::Error::from(std::io::ErrorKind::ConnectionRefused));
+        assert!(describe_connect_error(&io).contains("refused"));
+    }
+
+    #[test]
+    fn connections_go_to_the_vetted_ip_unless_tls_checks_the_name() {
+        let ip: IpAddr = "203.0.113.10".parse().unwrap();
+        assert_eq!(
+            pinned_host("db.example.com", Some(ip), false),
+            "203.0.113.10"
+        );
+        // verify-full / verify-identity: keep the name for the certificate.
+        assert_eq!(
+            pinned_host("db.example.com", Some(ip), true),
+            "db.example.com"
+        );
+        // Unix sockets (permissive mode) have no IP to pin.
+        assert_eq!(
+            pinned_host("/var/run/postgresql", None, false),
+            "/var/run/postgresql"
+        );
+
+        use sqlx::postgres::{PgConnectOptions, PgSslMode};
+        let full = PgConnectOptions::from_str("postgres://u@db.example.com/x?sslmode=verify-full")
+            .unwrap();
+        assert!(matches!(full.get_ssl_mode(), PgSslMode::VerifyFull));
+        let default = PgConnectOptions::from_str("postgres://u@db.example.com/x").unwrap();
+        assert!(!matches!(default.get_ssl_mode(), PgSslMode::VerifyFull));
     }
 
     #[test]
