@@ -45,6 +45,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/) and this 
 - Rate limiting can no longer be bypassed with a spoofed `X-Forwarded-For` (A-08)
 - The session JWT is no longer returned in auth response bodies, and execution previews redact secrets (A-09)
 - Plugin manifests can no longer point `wasm_file` outside their directory, and `plugin remove` only deletes inside the plugins directory
+- Database node connections go to the IP address that passed the egress check, so a DNS answer that changes afterwards can't redirect them (TLS that verifies the server name keeps the name) (R-01)
+- Database node errors no longer include credentials: the output shows only type, host, port and database, and the driver's error is reduced to its category (R-04)
+- `docker-compose.yml` passes `Z8_COOKIE_SECURE` to the backend, `true` by default, so the session cookie is only sent over HTTPS (R-03)
 - WASM plugins run with a CPU budget, a time limit and an enforced memory cap (`Z8_PLUGIN_FUEL`, `Z8_PLUGIN_TIMEOUT_MS`, `Z8_PLUGIN_MAX_MEMORY_MB`), off the async runtime; a manifest can no longer raise its own memory limit (A-10)
 
 ### Removed

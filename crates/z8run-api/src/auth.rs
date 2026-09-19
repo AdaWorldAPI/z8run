@@ -107,8 +107,12 @@ fn cookie_secure() -> bool {
 
 /// Builds the `Set-Cookie` value that stores the session token.
 fn session_cookie(token: &str) -> String {
+    session_cookie_with(token, cookie_secure())
+}
+
+fn session_cookie_with(token: &str, secure: bool) -> String {
     let max_age = SESSION_TTL_HOURS * 3600;
-    let secure = if cookie_secure() { "; Secure" } else { "" };
+    let secure = if secure { "; Secure" } else { "" };
     format!("{SESSION_COOKIE}={token}; HttpOnly; SameSite=Lax; Path=/; Max-Age={max_age}{secure}")
 }
 
@@ -402,4 +406,18 @@ pub fn auth_routes() -> Router<Arc<AppState>> {
 /// Mounts protected authentication routes (requires JWT).
 pub fn auth_protected_routes() -> Router<Arc<AppState>> {
     Router::new().route("/me", get(me))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_cookie_is_http_only_and_secure_when_asked() {
+        let secure = session_cookie_with("tok", true);
+        assert!(secure.starts_with(&format!("{SESSION_COOKIE}=tok;")));
+        assert!(secure.contains("HttpOnly") && secure.contains("SameSite=Lax"));
+        assert!(secure.ends_with("; Secure"), "{secure}");
+        assert!(!session_cookie_with("tok", false).contains("Secure"));
+    }
 }
