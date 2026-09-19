@@ -291,10 +291,15 @@ mod tests {
         dir
     }
 
+    /// Absolute on every platform ("/data/..." has no drive on Windows).
+    fn default_file() -> PathBuf {
+        std::env::temp_dir().join("z8run.db")
+    }
+
     fn run_prompt(script: &str) -> (anyhow::Result<Answers>, String) {
         let mut input = std::io::Cursor::new(script.as_bytes().to_vec());
         let mut out = Vec::new();
-        let result = prompt(&mut input, &mut out, Path::new("/data/z8run.db"));
+        let result = prompt(&mut input, &mut out, &default_file());
         (result, String::from_utf8(out).unwrap())
     }
 
@@ -304,7 +309,7 @@ mod tests {
         assert_eq!(
             answers.unwrap(),
             Answers {
-                db_url: "sqlite:///data/z8run.db?mode=rwc".into(),
+                db_url: sqlite_file_url(&default_file().display().to_string()),
                 port: 7700
             }
         );
