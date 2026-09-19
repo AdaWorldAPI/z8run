@@ -48,13 +48,14 @@ pub enum RuntimeError {
 
 /// Loads all plugins from a registry and registers them with the flow engine.
 ///
-/// Returns the count of successfully registered plugins.
+/// Returns the manifests of the plugins that were registered; the rest are
+/// logged and skipped.
 pub async fn register_plugins(
     engine: &FlowEngine,
     registry: &PluginRegistry,
-) -> Result<usize, RuntimeError> {
+) -> Result<Vec<PluginManifest>, RuntimeError> {
     let plugins = registry.list().await;
-    let mut count = 0;
+    let mut registered = Vec::new();
 
     for plugin in &plugins {
         match load_and_register_plugin(engine, plugin).await {
@@ -64,7 +65,7 @@ pub async fn register_plugins(
                     version = %plugin.manifest.version,
                     "Plugin registered with engine"
                 );
-                count += 1;
+                registered.push(plugin.manifest.clone());
             }
             Err(e) => {
                 tracing::warn!(
@@ -76,7 +77,7 @@ pub async fn register_plugins(
         }
     }
 
-    Ok(count)
+    Ok(registered)
 }
 
 /// Helper function to load a plugin from disk and register it with the engine.

@@ -1,6 +1,7 @@
 import { Z8Node } from "@/features/editor/nodes/Z8Node";
-import { NODE_DEFINITIONS, createNodeData } from "@/lib/nodeDefinitions";
+import { createNodeData } from "@/lib/nodeDefinitions";
 import { useFlowStore } from "@/stores/flowStore";
+import { findNodeDefinition } from "@/stores/pluginStore";
 import { useUIStore } from "@/stores/uiStore";
 import type { Z8NodeData } from "@/types/flow";
 import {
@@ -49,7 +50,7 @@ export function FlowCanvas() {
       const nodeType = e.dataTransfer.getData("application/z8run-node");
       if (!nodeType || !reactFlowRef.current) return;
 
-      const def = NODE_DEFINITIONS.find((d) => d.type === nodeType);
+      const def = findNodeDefinition(nodeType);
       if (!def) return;
 
       const position = reactFlowRef.current.screenToFlowPosition({

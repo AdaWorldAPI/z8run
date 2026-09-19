@@ -49,6 +49,7 @@ fn manifest() -> PluginManifest {
         capabilities: PluginCapabilities::default(),
         wasm_file: "plugin.wasm".into(),
         min_runtime_version: String::new(),
+        config: serde_json::Value::Null,
     }
 }
 

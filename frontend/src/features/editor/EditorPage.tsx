@@ -1,8 +1,8 @@
 import { flowsApi } from "@/api/flows";
 import { Header } from "@/components/layout/Header";
 import { useEngineSocket } from "@/hooks/useEngineSocket";
-import { NODE_DEFINITIONS } from "@/lib/nodeDefinitions";
 import { useFlowStore } from "@/stores/flowStore";
+import { findNodeDefinition, usePluginStore } from "@/stores/pluginStore";
 import { useUIStore } from "@/stores/uiStore";
 import type { Z8NodeData } from "@/types/flow";
 import {
@@ -27,21 +27,24 @@ function EditorInner() {
   const sidebarOpen = useUIStore((s) => s.sidebarOpen);
   const reactFlow = useReactFlow();
 
-  // Load flow from backend (including saved canvas state)
-  // Enrich nodes with inputs/outputs from NODE_DEFINITIONS if missing
+  // Load flow from backend (including saved canvas state). Plugin nodes are
+  // loaded first so saved plugin nodes can be enriched like built-ins.
+  // Enrich nodes with inputs/outputs from the node definitions if missing
   useEffect(() => {
     if (!id) return;
-    flowsApi
-      .get(id)
+    usePluginStore
+      .getState()
+      .load()
+      .then(() => flowsApi.get(id))
       .then((flow) => {
         const rawNodes = (flow.canvas_nodes ?? []) as Node<Z8NodeData>[];
         const nodes = rawNodes.map((node) => {
           const data = node.data;
           const nodeType =
             data.type ?? ((data as Record<string, unknown>).nodeType as string);
-          // If inputs/outputs are missing, look them up from NODE_DEFINITIONS
+          // If inputs/outputs are missing, look them up from the definitions
           if (nodeType && (!data.inputs?.length || !data.outputs?.length)) {
-            const def = NODE_DEFINITIONS.find((d) => d.type === nodeType);
+            const def = findNodeDefinition(nodeType);
             if (def) {
               return {
                 ...node,

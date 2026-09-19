@@ -35,6 +35,8 @@ pub fn api_routes() -> Router<Arc<AppState>> {
         .route("/flows/{id}/export", get(export_flow))
         .route("/flows/{id}/executions", get(get_executions))
         .route("/flows/import", post(import_flow))
+        // Plugin nodes for the editor palette
+        .route("/plugins", get(list_plugins))
         // Vault
         .route("/vault", get(list_credentials).post(store_credential))
         .route(
@@ -71,6 +73,55 @@ async fn health_check() -> Json<serde_json::Value> {
         "service": "z8run",
         "version": env!("CARGO_PKG_VERSION"),
     }))
+}
+
+/// Port types the editor knows; anything else is shown as `any`.
+const EDITOR_PORT_TYPES: &[&str] = &[
+    "any", "string", "number", "boolean", "object", "array", "binary",
+];
+
+/// GET /api/v1/plugins
+///
+/// Plugins registered with the engine, shaped like the editor's node
+/// definitions so they can be dragged onto the canvas.
+async fn list_plugins(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let ports = |ports: &[z8run_runtime::ManifestPort]| -> Vec<serde_json::Value> {
+        ports
+            .iter()
+            .map(|p| {
+                let port_type = if EDITOR_PORT_TYPES.contains(&p.port_type.as_str()) {
+                    p.port_type.as_str()
+                } else {
+                    "any"
+                };
+                serde_json::json!({
+                    "id": p.name,
+                    "name": p.name,
+                    "type": port_type,
+                    "required": p.required,
+                })
+            })
+            .collect()
+    };
+    let mut plugins = state.plugin_nodes();
+    plugins.sort_by(|a, b| a.name.cmp(&b.name));
+    let plugins: Vec<serde_json::Value> = plugins
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "type": m.name,
+                "label": m.name,
+                "description": m.description,
+                "version": m.version,
+                "author": m.author,
+                "icon": m.icon,
+                "inputs": ports(&m.inputs),
+                "outputs": ports(&m.outputs),
+                "defaultConfig": if m.config.is_object() { m.config.clone() } else { serde_json::json!({}) },
+            })
+        })
+        .collect();
+    Json(serde_json::json!({ "plugins": plugins }))
 }
 
 /// GET /api/v1/info

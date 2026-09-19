@@ -15,7 +15,8 @@ export type NodeCategory =
   | "data"
   | "ai"
   | "communication"
-  | "security";
+  | "security"
+  | "plugin";
 
 export type NodeStatus = "idle" | "running" | "success" | "error" | "disabled";
 
@@ -118,4 +119,5 @@ export const CATEGORY_COLORS: Record<NodeCategory, string> = {
   ai: "#EC4899",
   communication: "#F97316",
   security: "#EF4444",
+  plugin: "#A3A3A3",
 };

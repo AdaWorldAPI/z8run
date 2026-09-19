@@ -4,6 +4,7 @@ import {
   NODE_ICON_MAP,
   type NodeDefinition,
 } from "@/lib/nodeDefinitions";
+import { usePluginStore } from "@/stores/pluginStore";
 import { CATEGORY_COLORS, type NodeCategory } from "@/types/flow";
 import { Search } from "lucide-react";
 import { useCallback, useState } from "react";
@@ -47,8 +48,9 @@ function PaletteNode({ def }: { def: NodeDefinition }) {
 
 export function NodePalette() {
   const [search, setSearch] = useState("");
+  const pluginDefinitions = usePluginStore((s) => s.definitions);
 
-  const filtered = NODE_DEFINITIONS.filter(
+  const filtered = [...NODE_DEFINITIONS, ...pluginDefinitions].filter(
     (d) =>
       d.label.toLowerCase().includes(search.toLowerCase()) ||
       d.type.toLowerCase().includes(search.toLowerCase()) ||

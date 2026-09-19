@@ -794,6 +794,7 @@ export const NODE_CATEGORIES: { id: NodeCategory; label: string }[] = [
   { id: "ai", label: "AI" },
   { id: "communication", label: "Communication" },
   { id: "security", label: "Security" },
+  { id: "plugin", label: "Plugins" },
 ];
 
 /** Create Z8NodeData from a NodeDefinition */

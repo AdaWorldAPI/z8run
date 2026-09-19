@@ -1,4 +1,4 @@
-import { NODE_DEFINITIONS } from "@/lib/nodeDefinitions";
+import { findNodeDefinition } from "@/stores/pluginStore";
 import {
   AlertTriangle,
   Check,
@@ -557,7 +557,7 @@ function generateSampleInput(
   nodeType: string,
   config: Record<string, unknown>,
 ): Record<string, unknown> {
-  const def = NODE_DEFINITIONS.find((d) => d.type === nodeType);
+  const def = findNodeDefinition(nodeType);
   const isInput = def?.category === "input";
 
   if (isInput) {
@@ -666,7 +666,7 @@ export function NodeTestPanel({ nodeType, config }: NodeTestPanelProps) {
         setResult(res);
       } else {
         // Generic pass-through for nodes without a specific evaluator
-        const def = NODE_DEFINITIONS.find((d) => d.type === nodeType);
+        const def = findNodeDefinition(nodeType);
         const firstOutput = def?.outputs[0]?.id ?? "output";
         setResult({
           port: firstOutput,

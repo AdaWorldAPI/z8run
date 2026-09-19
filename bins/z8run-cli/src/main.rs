@@ -419,7 +419,11 @@ async fn cmd_serve(
     // discovered at startup and then unusable, and any flow referencing one was
     // rejected with "unsupported node types".
     match z8run_runtime::register_plugins(&state.engine, &registry).await {
-        Ok(n) => tracing::info!(plugins = n, "Plugins registered with engine"),
+        Ok(registered) => {
+            tracing::info!(plugins = registered.len(), "Plugins registered with engine");
+            // The editor lists these in its node palette.
+            state.set_plugin_nodes(registered);
+        }
         Err(e) => tracing::warn!(error = %e, "Plugin registration with engine failed"),
     }
 
@@ -476,7 +480,9 @@ async fn cmd_plugin(action: PluginAction, data_dir: &str) -> anyhow::Result<()> 
 
     match action {
         PluginAction::List => {
-            let plugins = registry.list().await;
+            registry.scan().await?;
+            let mut plugins = registry.list().await;
+            plugins.sort_by(|a, b| a.manifest.name.cmp(&b.manifest.name));
             if plugins.is_empty() {
                 println!("No plugins installed.");
             } else {
@@ -493,8 +499,15 @@ async fn cmd_plugin(action: PluginAction, data_dir: &str) -> anyhow::Result<()> 
         PluginAction::Install { source } => {
             let source_path = std::path::Path::new(&source);
             println!("Installing plugin from: {}", source);
-            match registry.install_local(source_path).await {
-                Ok(name) => println!("✓ Plugin '{}' installed successfully", name),
+            // Built-in node names can't be taken by a plugin.
+            let engine = z8run_core::FlowEngine::new();
+            z8run_core::nodes::register_builtin_nodes(&engine).await;
+            let reserved = engine.registered_node_types().await;
+            match registry.install_local(source_path, &reserved).await {
+                Ok(name) => {
+                    println!("✓ Plugin '{}' installed successfully", name);
+                    println!("  Restart z8run to load it.");
+                }
                 Err(e) => {
                     eprintln!("✗ Failed to install plugin: {}", e);
                     std::process::exit(1);
@@ -502,9 +515,13 @@ async fn cmd_plugin(action: PluginAction, data_dir: &str) -> anyhow::Result<()> 
             }
         }
         PluginAction::Remove { name } => {
+            registry.scan().await?;
             println!("Removing plugin: {}", name);
             match registry.remove(&name).await {
-                Ok(()) => println!("✓ Plugin '{}' removed successfully", name),
+                Ok(()) => {
+                    println!("✓ Plugin '{}' removed successfully", name);
+                    println!("  Restart z8run to unload it.");
+                }
                 Err(e) => {
                     eprintln!("✗ Failed to remove plugin: {}", e);
                     std::process::exit(1);

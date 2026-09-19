@@ -28,6 +28,8 @@ pub struct AppState {
     pub webhook_responders: WebhookResponders,
     /// Body, concurrency and time limits for public hooks (A-06).
     pub hook_limits: crate::hook_limits::HookLimits,
+    /// WASM plugins registered with the engine, listed in the editor.
+    plugin_nodes: std::sync::RwLock<Vec<z8run_runtime::PluginManifest>>,
 }
 
 impl AppState {
@@ -61,6 +63,20 @@ impl AppState {
             port,
             webhook_responders: responders,
             hook_limits: crate::hook_limits::HookLimits::from_env(),
+            plugin_nodes: std::sync::RwLock::new(Vec::new()),
         }
+    }
+
+    /// Records the plugins registered with the engine at startup.
+    pub fn set_plugin_nodes(&self, plugins: Vec<z8run_runtime::PluginManifest>) {
+        *self.plugin_nodes.write().unwrap_or_else(|e| e.into_inner()) = plugins;
+    }
+
+    /// Plugins registered with the engine.
+    pub fn plugin_nodes(&self) -> Vec<z8run_runtime::PluginManifest> {
+        self.plugin_nodes
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 }

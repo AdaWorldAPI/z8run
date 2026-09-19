@@ -8,14 +8,20 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use crate::manifest::PluginManifest;
+use crate::manifest::{is_valid_plugin_name, ManifestPort, PluginManifest};
+use crate::sandbox::WasmSandbox;
 use crate::RuntimeError;
+
+/// Exports a module needs to work as a node.
+const REQUIRED_EXPORTS: &[&str] = &["memory", "z8_alloc", "z8_process"];
 
 /// Information about a registered plugin.
 #[derive(Debug, Clone)]
 pub struct RegisteredPlugin {
     /// Plugin manifest.
     pub manifest: PluginManifest,
+    /// Directory the plugin was loaded from.
+    pub dir: PathBuf,
     /// Path to the WASM file.
     pub wasm_path: PathBuf,
     /// Whether the module is preloaded in memory.
@@ -82,6 +88,7 @@ impl PluginRegistry {
 
         let manifest = PluginManifest::from_toml(&manifest_content)
             .map_err(|e| RuntimeError::Manifest(e.to_string()))?;
+        manifest.validate().map_err(RuntimeError::Manifest)?;
 
         let wasm_path = dir.join(&manifest.wasm_file);
         if !wasm_path.exists() {
@@ -95,6 +102,7 @@ impl PluginRegistry {
             name.clone(),
             RegisteredPlugin {
                 manifest,
+                dir: dir.to_path_buf(),
                 wasm_path,
                 preloaded: false,
             },
@@ -123,118 +131,177 @@ impl PluginRegistry {
         &self.plugins_dir
     }
 
-    /// Installs a plugin from a local .wasm file or directory.
+    /// Installs a plugin from a local .wasm file or a plugin directory.
     ///
-    /// If `source` is a directory, it must contain manifest.toml + .wasm file.
-    /// If `source` is a .wasm file, a minimal manifest is auto-generated.
-    pub async fn install_local(&self, source: &Path) -> Result<String, RuntimeError> {
+    /// A directory must contain `manifest.toml` and the wasm file it names;
+    /// only those two files are copied (not build output such as `target/`).
+    /// A single `.wasm` file gets a generated manifest named after the file.
+    /// The module is compiled and checked for the z8 exports first, and
+    /// nothing is left behind if installation fails. Names in `reserved`
+    /// (the built-in node types) are refused, since the server would not
+    /// load a plugin that shadows one.
+    pub async fn install_local(
+        &self,
+        source: &Path,
+        reserved: &[String],
+    ) -> Result<String, RuntimeError> {
         if !source.exists() {
             return Err(RuntimeError::ModuleNotFound(source.display().to_string()));
         }
 
-        if source.is_dir() {
-            // Source is a plugin directory - copy it into plugins_dir
-            let dir_name = source
-                .file_name()
-                .ok_or_else(|| RuntimeError::Manifest("Invalid directory name".into()))?;
-            let dest = self.plugins_dir.join(dir_name);
-
-            if dest.exists() {
+        let (manifest, wasm_bytes) = if source.is_dir() {
+            let content = std::fs::read_to_string(source.join("manifest.toml"))
+                .map_err(|e| RuntimeError::Manifest(format!("manifest.toml: {}", e)))?;
+            let manifest = PluginManifest::from_toml(&content)
+                .map_err(|e| RuntimeError::Manifest(e.to_string()))?;
+            manifest.validate().map_err(RuntimeError::Manifest)?;
+            let wasm_bytes = std::fs::read(source.join(&manifest.wasm_file)).map_err(|e| {
+                RuntimeError::ModuleNotFound(format!("{}: {}", manifest.wasm_file, e))
+            })?;
+            (manifest, wasm_bytes)
+        } else if source.extension().is_some_and(|e| e == "wasm") {
+            let stem = source.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            let name = stem.to_ascii_lowercase().replace([' ', '.'], "-");
+            if !is_valid_plugin_name(&name) {
                 return Err(RuntimeError::Manifest(format!(
-                    "Plugin directory '{}' already exists. Remove it first.",
-                    dest.display()
+                    "cannot derive a plugin name from '{stem}'; rename the file \
+                     (lowercase letters, digits, '-' or '_')"
                 )));
             }
-
-            copy_dir_recursive(source, &dest)?;
-            self.register_from_dir(&dest).await
-        } else if source.extension().map(|e| e == "wasm").unwrap_or(false) {
-            // Source is a single .wasm file - create a plugin directory with auto-manifest
-            let stem = source
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("unknown");
-            let plugin_dir = self.plugins_dir.join(stem);
-            std::fs::create_dir_all(&plugin_dir).map_err(|e| {
-                RuntimeError::ModuleLoad(format!("Failed to create plugin dir: {}", e))
-            })?;
-
-            let wasm_filename = source
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("plugin.wasm");
-
-            // Copy the .wasm file
-            std::fs::copy(source, plugin_dir.join(wasm_filename))
-                .map_err(|e| RuntimeError::ModuleLoad(format!("Failed to copy wasm: {}", e)))?;
-
-            // Generate a manifest
-            let manifest = format!(
-                r#"name = "{}"
-version = "0.1.0"
-description = "Installed from {}"
-wasm_file = "{}"
-"#,
-                stem,
-                source.display(),
-                wasm_filename
-            );
-            std::fs::write(plugin_dir.join("manifest.toml"), manifest)
-                .map_err(|e| RuntimeError::Manifest(format!("Failed to write manifest: {}", e)))?;
-
-            self.register_from_dir(&plugin_dir).await
+            let wasm_bytes = std::fs::read(source)
+                .map_err(|e| RuntimeError::ModuleLoad(format!("Failed to read wasm: {}", e)))?;
+            (generated_manifest(&name, source), wasm_bytes)
         } else {
-            Err(RuntimeError::ModuleLoad(
+            return Err(RuntimeError::ModuleLoad(
                 "Source must be a .wasm file or a directory with manifest.toml".into(),
-            ))
-        }
-    }
+            ));
+        };
 
-    /// Removes an installed plugin by name.
-    pub async fn remove(&self, name: &str) -> Result<(), RuntimeError> {
-        // Check if plugin exists in registry
-        let exists = self.plugins.read().await.contains_key(name);
-        if !exists {
-            return Err(RuntimeError::ModuleNotFound(format!(
-                "Plugin '{}' is not installed",
-                name
+        if reserved.contains(&manifest.name) {
+            return Err(RuntimeError::Manifest(format!(
+                "'{}' is the name of a built-in node; rename the plugin",
+                manifest.name
+            )));
+        }
+        check_module(&wasm_bytes)?;
+
+        let dest = self.plugins_dir.join(&manifest.name);
+        if dest.exists() {
+            return Err(RuntimeError::Manifest(format!(
+                "A plugin named '{}' is already installed. Remove it first.",
+                manifest.name
             )));
         }
 
-        // Remove plugin directory
-        let plugin_dir = self.plugins_dir.join(name);
-        if plugin_dir.exists() {
-            std::fs::remove_dir_all(&plugin_dir).map_err(|e| {
-                RuntimeError::ModuleLoad(format!("Failed to remove plugin directory: {}", e))
+        let written = (|| -> Result<(), RuntimeError> {
+            let wasm_dest = dest.join(&manifest.wasm_file);
+            if let Some(parent) = wasm_dest.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    RuntimeError::ModuleLoad(format!("Failed to create plugin dir: {}", e))
+                })?;
+            }
+            std::fs::write(&wasm_dest, &wasm_bytes)
+                .map_err(|e| RuntimeError::ModuleLoad(format!("Failed to copy wasm: {}", e)))?;
+            let toml = manifest
+                .to_toml()
+                .map_err(|e| RuntimeError::Manifest(e.to_string()))?;
+            std::fs::write(dest.join("manifest.toml"), toml)
+                .map_err(|e| RuntimeError::Manifest(format!("Failed to write manifest: {}", e)))
+        })();
+
+        match written {
+            Ok(()) => self.register_from_dir(&dest).await,
+            Err(e) => {
+                let _ = std::fs::remove_dir_all(&dest);
+                Err(e)
+            }
+        }
+    }
+
+    /// Removes an installed plugin by name, deleting the directory it was
+    /// loaded from. Call [`Self::scan`] first so installed plugins are known.
+    pub async fn remove(&self, name: &str) -> Result<(), RuntimeError> {
+        let plugin = self
+            .plugins
+            .read()
+            .await
+            .get(name)
+            .cloned()
+            .ok_or_else(|| {
+                RuntimeError::ModuleNotFound(format!("Plugin '{}' is not installed", name))
             })?;
+
+        // Only ever delete a direct child of the plugins directory.
+        let root = self
+            .plugins_dir
+            .canonicalize()
+            .map_err(|e| RuntimeError::ModuleLoad(e.to_string()))?;
+        let dir = plugin
+            .dir
+            .canonicalize()
+            .map_err(|e| RuntimeError::ModuleLoad(e.to_string()))?;
+        if dir.parent() != Some(root.as_path()) {
+            return Err(RuntimeError::ModuleLoad(format!(
+                "Refusing to remove {}: not inside {}",
+                dir.display(),
+                root.display()
+            )));
         }
 
-        // Unregister from memory
+        std::fs::remove_dir_all(&dir).map_err(|e| {
+            RuntimeError::ModuleLoad(format!("Failed to remove plugin directory: {}", e))
+        })?;
         self.plugins.write().await.remove(name);
-
         Ok(())
     }
 }
 
-/// Recursively copy a directory.
-fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), RuntimeError> {
-    std::fs::create_dir_all(dst)
-        .map_err(|e| RuntimeError::ModuleLoad(format!("Failed to create dir: {}", e)))?;
-
-    for entry in std::fs::read_dir(src)
-        .map_err(|e| RuntimeError::ModuleLoad(format!("Failed to read dir: {}", e)))?
-        .flatten()
-    {
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-
-        if src_path.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path)?;
-        } else {
-            std::fs::copy(&src_path, &dst_path)
-                .map_err(|e| RuntimeError::ModuleLoad(format!("Failed to copy file: {}", e)))?;
-        }
+/// Manifest for a plugin installed from a bare `.wasm` file: one `input`
+/// and one `output` port of any type.
+fn generated_manifest(name: &str, source: &Path) -> PluginManifest {
+    let port = |port_name: &str| ManifestPort {
+        name: port_name.to_string(),
+        port_type: "any".to_string(),
+        description: String::new(),
+        required: false,
+    };
+    PluginManifest {
+        name: name.to_string(),
+        version: "0.1.0".to_string(),
+        description: format!(
+            "Installed from {}",
+            source.file_name().unwrap_or_default().to_string_lossy()
+        ),
+        author: String::new(),
+        license: String::new(),
+        category: "plugin".to_string(),
+        icon: String::new(),
+        inputs: vec![port("input")],
+        outputs: vec![port("output")],
+        capabilities: Default::default(),
+        wasm_file: "plugin.wasm".to_string(),
+        min_runtime_version: String::new(),
+        config: serde_json::Value::Null,
     }
+}
 
-    Ok(())
+/// Compiles the module and checks it has the exports a node needs, so a
+/// broken plugin is rejected at install rather than at the next restart.
+fn check_module(wasm_bytes: &[u8]) -> Result<(), RuntimeError> {
+    let sandbox = WasmSandbox::default_sandbox()?;
+    let module = sandbox.compile(wasm_bytes)?;
+    let exports: Vec<&str> = module.exports().map(|e| e.name()).collect();
+    let missing: Vec<&str> = REQUIRED_EXPORTS
+        .iter()
+        .copied()
+        .filter(|name| !exports.contains(name))
+        .collect();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(RuntimeError::ModuleLoad(format!(
+            "not a z8run plugin: missing exports {}",
+            missing.join(", ")
+        )))
+    }
 }
