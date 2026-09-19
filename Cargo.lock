@@ -5181,6 +5181,7 @@ dependencies = [
  "chrono",
  "csv",
  "futures-util",
+ "ipnet",
  "regex",
  "reqwest",
  "rumqttc",
@@ -5192,6 +5193,7 @@ dependencies = [
  "tokio",
  "tokio-test",
  "tracing",
+ "url",
  "urlencoding",
  "uuid",
 ]
