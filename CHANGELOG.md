@@ -38,6 +38,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/) and this 
 - UTF-8 panics in previews and masking (A-07)
 - Rate limiting can no longer be bypassed with a spoofed `X-Forwarded-For` (A-08)
 - The session JWT is no longer returned in auth response bodies, and execution previews redact secrets (A-09)
+- WASM plugins run with a CPU budget, a time limit and an enforced memory cap (`Z8_PLUGIN_FUEL`, `Z8_PLUGIN_TIMEOUT_MS`, `Z8_PLUGIN_MAX_MEMORY_MB`), off the async runtime; a manifest can no longer raise its own memory limit (A-10)
 
 ### Removed
 - `bins/z8run-server` placeholder, superseded by `--features embed-ui`
