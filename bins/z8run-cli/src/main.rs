@@ -317,7 +317,14 @@ async fn cmd_serve(
 
     // Scan plugins
     let registry = z8run_runtime::registry::PluginRegistry::new(format!("{}/plugins", data_dir));
-    let plugin_count = registry.scan().await.unwrap_or(0);
+    // A failed scan leaves the server usable without plugins, but says so.
+    let plugin_count = match registry.scan().await {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::error!(error = %e, "Could not scan the plugins directory; no plugins will be loaded");
+            0
+        }
+    };
     tracing::info!(plugins = plugin_count, "Plugins scanned");
 
     // Initialize storage (PostgreSQL or SQLite based on URL)

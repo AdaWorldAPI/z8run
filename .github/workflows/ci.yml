@@ -70,6 +70,72 @@ jobs:
       - name: Test CLI
         run: cargo test -p z8run-cli
 
+  # Storage and the webhook/deploy path against a real PostgreSQL (R-05):
+  # the other jobs only exercise SQLite.
+  postgres:
+    name: PostgreSQL
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: z8run
+          POSTGRES_PASSWORD: z8run
+          POSTGRES_DB: z8run_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U z8run"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Disposable database; the tests wipe it (its name must contain "test").
+      Z8_TEST_POSTGRES_URL: postgres://z8run:z8run@localhost:5432/z8run_test
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry & build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Storage tests
+        run: cargo test -p z8run-storage --test postgres
+
+      - name: Webhook and deploy integration tests
+        run: cargo test -p z8run-api --test hook_security
+
+  # Known vulnerabilities in dependencies (RustSec and npm). Reviewed
+  # exceptions live in .cargo/audit.toml with their reasons.
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: RustSec advisories (cargo audit)
+        run: cargo audit
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: npm advisories (npm audit)
+        working-directory: frontend
+        run: npm audit --audit-level=high
+
   # Frontend
   frontend:
     name: Frontend
@@ -92,6 +158,10 @@ jobs:
       - name: Lint & format (Biome)
         working-directory: frontend
         run: npm run check
+
+      - name: Unit tests (Vitest)
+        working-directory: frontend
+        run: npm test
 
       - name: Type check & build
         working-directory: frontend

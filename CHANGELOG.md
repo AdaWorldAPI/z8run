@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/) and this 
 - Webhook limits: `Z8_HOOK_MAX_BODY_BYTES`, `Z8_HOOK_MAX_CONCURRENCY`, `Z8_HOOK_TIMEOUT_SECS`
 - `Z8_TRUSTED_PROXIES` for client IP resolution behind reverse proxies
 - Release workflow takes a version tag and builds Windows; CI tests the CLI on Windows
+- CI runs the storage and webhook/deploy integration tests against PostgreSQL, `cargo audit` (reviewed exceptions in `.cargo/audit.toml`), `npm audit`, and frontend unit tests with Vitest (R-05)
 - Installed WASM plugins are registered with the engine at startup (#80) and listed in the editor's node palette under **Plugins** (`GET /api/v1/plugins`)
 - Plugin manifests can declare default node settings in a `[config]` table
 
@@ -27,6 +28,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/) and this 
 - The editor no longer loads fonts from Google Fonts
 
 ### Fixed
+- A failed plugin list request left the editor palette without plugins until reload; it now retries, and offers a Retry button if it still fails (R-08)
+- The editor validates the API responses and WebSocket events it navigates, renders and executes with, dropping malformed events instead of storing them (R-09)
+- A failed scan of the plugins directory is logged as an error instead of silently loading no plugins
 - Stopped flows and timed-out webhook runs stayed "running" forever in the execution history; they are now recorded as `stopped`, terminal states can't be overwritten, and runs left open by a previous shutdown are closed at startup (R-02)
 - The webhook limiter kept an entry for every flow ever called; entries are dropped when a flow is stopped, redeployed without hooks or deleted (R-07)
 - Restarting a SQLite install logged everyone out and made vault credentials unreadable

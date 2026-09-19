@@ -14,8 +14,59 @@ use serde_json::{json, Value};
 use tower::ServiceExt;
 
 use z8run_api::{build_router, state::AppState};
-use z8run_storage::credential_vault::SqliteCredentialVault;
+use z8run_storage::credential_vault::{CredentialVault, PgCredentialVault, SqliteCredentialVault};
+use z8run_storage::postgres::PgStorage;
+use z8run_storage::repository::{ExecutionRepository, FlowRepository, UserRepository};
 use z8run_storage::sqlite::SqliteStorage;
+
+type Backends = (
+    Arc<dyn FlowRepository>,
+    Arc<dyn UserRepository>,
+    Arc<dyn ExecutionRepository>,
+    Arc<dyn CredentialVault>,
+);
+
+/// PostgreSQL when `Z8_TEST_POSTGRES_URL` names a disposable test database
+/// (the CI Postgres job sets it; R-05), otherwise in-memory SQLite. The
+/// Postgres database is wiped first, so its name must contain "test".
+async fn backends() -> Backends {
+    if let Ok(url) = std::env::var("Z8_TEST_POSTGRES_URL") {
+        let database = url
+            .rsplit('/')
+            .next()
+            .unwrap_or("")
+            .split('?')
+            .next()
+            .unwrap_or("");
+        assert!(
+            database.contains("test"),
+            "refusing to wipe '{database}': Z8_TEST_POSTGRES_URL must name a test database"
+        );
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect postgres");
+        sqlx::raw_sql("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
+            .execute(&pool)
+            .await
+            .expect("reset schema");
+        let pg = Arc::new(PgStorage::new(&url).await.expect("connect postgres"));
+        pg.migrate().await.expect("migrate");
+        let vault = Arc::new(PgCredentialVault::new(
+            pg.pool().clone(),
+            "test-vault-secret",
+        ));
+        eprintln!("hook_security: running on PostgreSQL ({database})");
+        return (pg.clone(), pg.clone(), pg, vault);
+    }
+
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("connect in-memory sqlite");
+    let storage = Arc::new(SqliteStorage::from_pool(pool.clone()));
+    storage.migrate().await.expect("migrate");
+    let vault = Arc::new(SqliteCredentialVault::new(pool, "test-vault-secret"));
+    (storage.clone(), storage.clone(), storage, vault)
+}
 
 async fn test_app() -> (Router, Arc<AppState>) {
     // 0 disables a limiter (SEC-006); keep the suite from being throttled.
@@ -32,19 +83,11 @@ async fn test_app() -> (Router, Arc<AppState>) {
     std::env::set_var("Z8_HOOK_TIMEOUT_SECS", "1");
 
     // A single shared connection keeps the in-memory database alive.
-    let pool = sqlx::sqlite::SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect("sqlite::memory:")
-        .await
-        .expect("connect in-memory sqlite");
-    let storage = Arc::new(SqliteStorage::from_pool(pool.clone()));
-    storage.migrate().await.expect("migrate");
-    let vault = Arc::new(SqliteCredentialVault::new(pool, "test-vault-secret"));
-
+    let (flows, users, executions, vault) = backends().await;
     let state = Arc::new(AppState::new(
-        storage.clone(),
-        storage.clone(),
-        storage,
+        flows,
+        users,
+        executions,
         vault,
         "integration-test-jwt-secret".to_string(),
         0,

@@ -1,0 +1,15 @@
+# cargo audit configuration (RustSec). Every ignored advisory needs its
+# reason next to it and should be revisited when the dependency updates.
+
+[advisories]
+ignore = [
+    # rustls-webpki 0.102.8 is pulled in only by rumqttc 0.25.1 (latest
+    # release), which uses it just for an error type (rumqttc src/tls.rs).
+    # Certificate verification runs on rustls 0.23 with rustls-webpki
+    # 0.103.13, which is patched. Dismissed on GitHub as "vulnerable code
+    # not used" (Dependabot alerts #24, #25, #28). Revisit when rumqttc
+    # updates its rustls-webpki dependency.
+    "RUSTSEC-2026-0098",
+    "RUSTSEC-2026-0099",
+    "RUSTSEC-2026-0104",
+]
