@@ -986,8 +986,15 @@ mod tests {
 
         let preview = truncate_payload(&payload);
         let text = preview.to_string();
-        for secret in ["abc", "xyz", "k-123", "hunter2", "t0k", "\"p\""] {
-            assert!(!text.contains(secret), "leaked {secret}: {text}");
+        for (i, secret) in ["abc", "xyz", "k-123", "hunter2", "t0k", "\"p\""]
+            .iter()
+            .enumerate()
+        {
+            // Don't echo the secret into test output; its index is enough.
+            assert!(
+                !text.contains(secret),
+                "secret #{i} leaked into the preview"
+            );
         }
         assert_eq!(preview["headers"]["accept"], "application/json");
         assert_eq!(preview["usage"]["total_tokens"], 42);

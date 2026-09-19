@@ -498,7 +498,10 @@ mod tests {
             "card ****-****-****-२३४५ end"
         );
         let out = patterns.apply("call ९१ ९८७६ ५४३२ १०९८ now", &["phone".to_string()]);
-        assert!(out.contains("***१०९८"), "{out}");
+        assert!(
+            out.contains("***१०९८"),
+            "phone not masked to its last 4 digits"
+        );
     }
 
     /// A card number is masked once, with a single "****-****-****-" prefix.
