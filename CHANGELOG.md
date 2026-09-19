@@ -17,6 +17,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/) and this 
 - Webhook limits: `Z8_HOOK_MAX_BODY_BYTES`, `Z8_HOOK_MAX_CONCURRENCY`, `Z8_HOOK_TIMEOUT_SECS`
 - `Z8_TRUSTED_PROXIES` for client IP resolution behind reverse proxies
 - Release workflow takes a version tag and builds Windows; CI tests the CLI on Windows
+- Installed WASM plugins are registered with the engine at startup (#80) and listed in the editor's node palette under **Plugins** (`GET /api/v1/plugins`)
+- Plugin manifests can declare default node settings in a `[config]` table
 
 ### Changed
 - Without `Z8_JWT_SECRET`/`Z8_VAULT_SECRET`, generated secrets are kept in `<data dir>/secrets/` instead of changing on every start
@@ -29,6 +31,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/) and this 
 - Stop button disabled for deployed hook flows; "(unsaved)" shown right after opening a flow
 - Release builds on macOS 27 (proc-macros were stripped)
 - Default SQLite path containing `%`, `?` or `#`
+- `z8run plugin install ./file.wasm` failed on every install (the generated manifest lacked required fields)
+- `z8run plugin list` and `plugin remove` reported no plugins installed
+- Plugin install copied the whole source directory (including build output such as `target/`); it now copies only the manifest and the module, checks the module first and cleans up on failure
+- A plugin named like a built-in node replaced it for every flow; such names are now refused at install and at startup
 
 ### Security
 - Webhooks are bound to their trigger node and deployed snapshot, run only that branch, and reject unknown auth types (A-01, A-05)
@@ -38,6 +44,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/) and this 
 - UTF-8 panics in previews and masking (A-07)
 - Rate limiting can no longer be bypassed with a spoofed `X-Forwarded-For` (A-08)
 - The session JWT is no longer returned in auth response bodies, and execution previews redact secrets (A-09)
+- Plugin manifests can no longer point `wasm_file` outside their directory, and `plugin remove` only deletes inside the plugins directory
 - WASM plugins run with a CPU budget, a time limit and an enforced memory cap (`Z8_PLUGIN_FUEL`, `Z8_PLUGIN_TIMEOUT_MS`, `Z8_PLUGIN_MAX_MEMORY_MB`), off the async runtime; a manifest can no longer raise its own memory limit (A-10)
 
 ### Removed

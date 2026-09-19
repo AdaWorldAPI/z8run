@@ -192,7 +192,7 @@ z8run/
 1. **Flows** are directed acyclic graphs (DAGs) of nodes connected by typed ports
 2. **Nodes** process messages and pass them to connected outputs
 3. **The scheduler** compiles flows into parallel execution plans using topological ordering
-4. **Plugins** run inside a WebAssembly sandbox with controlled capabilities (network, filesystem, memory limits)
+4. **Plugins** run inside a WebAssembly sandbox with no network, filesystem or clock access, and with per-call CPU, time and memory limits
 5. **The protocol** uses a compact binary format over WebSockets for real-time editor sync
 
 ## CLI
@@ -211,6 +211,42 @@ z8run plugin scan                      # Scan plugin directory
 z8run validate flow.json               # Validate a flow file
 z8run info                             # Show system information
 ```
+
+### Plugins
+
+Plugins are WebAssembly modules that become nodes in the editor, under
+**Plugins** in the node palette. Install one with `z8run plugin install` and
+restart z8run to load it.
+
+A plugin exports `memory`, `z8_alloc(size) -> ptr` and
+`z8_process(ptr, len) -> ptr`. `z8_process` receives the message payload as
+JSON and returns a pointer to a 4-byte little-endian length followed by a JSON
+array of outputs, e.g. `[{"port": "output", "payload": {...}}]`. Optional
+exports: `z8_configure(ptr, len) -> i32` (receives the node config),
+`z8_validate() -> i32` and `z8_dealloc(ptr, len)`.
+
+A bare `.wasm` file gets one `input` and one `output` port. For named ports or
+editable settings, install a directory with a `manifest.toml`:
+
+```toml
+name = "row-scorer"            # node type: lowercase letters, digits, - and _
+version = "1.0.0"
+description = "Scores rows"
+author = "you"
+category = "transform"
+wasm_file = "row_scorer.wasm"  # inside the plugin directory
+inputs = [{ name = "rows", type = "array", required = true }]
+outputs = [{ name = "scored", type = "array" }]
+
+[config]                       # default settings, editable in the editor
+threshold = 5
+```
+
+Only `manifest.toml` and the module are copied on install. Names of built-in
+nodes (e.g. `http-request`) are refused. Each call runs under
+`Z8_PLUGIN_FUEL`, `Z8_PLUGIN_TIMEOUT_MS` and `Z8_PLUGIN_MAX_MEMORY_MB`; a
+manifest can lower its memory limit (`[capabilities] memory_limit_mb`) but not
+raise it.
 
 ### Environment Variables
 
