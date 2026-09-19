@@ -3,6 +3,7 @@
 //! Main entry point for the z8run flow engine.
 //! Manages the server, migrations, plugins and system information.
 
+mod desktop;
 mod secrets;
 
 use clap::{Parser, Subcommand};
@@ -17,12 +18,16 @@ struct Cli {
     #[arg(long, env = "Z8_LOG_LEVEL", default_value = "info")]
     log_level: String,
 
-    /// Data directory
-    #[arg(long, env = "Z8_DATA_DIR", default_value = "./data")]
-    data_dir: String,
+    /// Data directory [default: ./data; without a subcommand, the per-user
+    /// data directory]
+    #[arg(long, env = "Z8_DATA_DIR")]
+    data_dir: Option<String>,
 
+    /// Without a subcommand, z8run runs in desktop mode: it serves on
+    /// 127.0.0.1, keeps data in the per-user data directory and opens the
+    /// editor in the browser.
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
@@ -106,25 +111,79 @@ async fn main() -> anyhow::Result<()> {
         .with_thread_ids(false)
         .init();
 
+    // A double-clicked console closes on exit; keep errors readable.
+    let desktop_mode = cli.command.is_none();
+    let result = run(cli).await;
+    if let Err(e) = &result {
+        if desktop_mode {
+            eprintln!("\nError: {e:#}");
+            desktop::wait_before_exit();
+        }
+    }
+    result
+}
+
+async fn run(cli: Cli) -> anyhow::Result<()> {
+    let data_dir = cli.data_dir.clone().unwrap_or_else(|| "./data".to_string());
     match cli.command {
-        Commands::Serve { port, bind, db_url } => {
-            cmd_serve(port, bind, db_url, &cli.data_dir).await?;
+        None => cmd_desktop(cli.data_dir).await?,
+        Some(Commands::Serve { port, bind, db_url }) => {
+            cmd_serve(port, bind, db_url, &data_dir, false).await?;
         }
-        Commands::Migrate { db_url } => {
-            cmd_migrate(db_url, &cli.data_dir).await?;
+        Some(Commands::Migrate { db_url }) => {
+            cmd_migrate(db_url, &data_dir).await?;
         }
-        Commands::Plugin { action } => {
-            cmd_plugin(action, &cli.data_dir).await?;
+        Some(Commands::Plugin { action }) => {
+            cmd_plugin(action, &data_dir).await?;
         }
-        Commands::Info => {
+        Some(Commands::Info) => {
             cmd_info();
         }
-        Commands::Validate { file } => {
+        Some(Commands::Validate { file }) => {
             cmd_validate(&file).await?;
         }
     }
 
     Ok(())
+}
+
+/// Desktop mode (no subcommand). Honors the same environment variables as
+/// `serve`, with local-only defaults.
+async fn cmd_desktop(data_dir: Option<String>) -> anyhow::Result<()> {
+    let env = |name: &str| std::env::var(name).ok().filter(|v| !v.trim().is_empty());
+    let port: u16 = match env("Z8_PORT") {
+        Some(p) => p
+            .trim()
+            .parse()
+            .map_err(|_| anyhow::anyhow!("Z8_PORT must be a port number, got '{p}'"))?,
+        None => 7700,
+    };
+    let bind = env("Z8_BIND").unwrap_or_else(|| "127.0.0.1".to_string());
+    let open = desktop::browser_enabled() && z8run_api::ui::is_embedded();
+
+    if desktop::is_running(port).await {
+        let url = format!("http://localhost:{port}");
+        println!("z8run is already running: {url}");
+        if open {
+            desktop::open_browser(&url);
+        }
+        return Ok(());
+    }
+
+    let data_dir =
+        data_dir.unwrap_or_else(|| desktop::default_data_dir().to_string_lossy().into_owned());
+    cmd_serve(port, bind, env("Z8_DB_URL"), &data_dir, open).await
+}
+
+/// Default SQLite URL for `data_dir`. sqlx percent-decodes the path, so the
+/// characters that would change its meaning (`%`, `?`, `#`) are encoded; a
+/// Windows user name like `ana#1` must not cut the path short.
+fn sqlite_url(data_dir: &str) -> String {
+    let path = format!("{data_dir}/z8run.db")
+        .replace('%', "%25")
+        .replace('?', "%3F")
+        .replace('#', "%23");
+    format!("sqlite://{path}?mode=rwc")
 }
 
 /// Host to show in the editor URL: a wildcard bind is reachable locally.
@@ -196,6 +255,7 @@ async fn cmd_serve(
     bind: String,
     db_url: Option<String>,
     data_dir: &str,
+    open_browser: bool,
 ) -> anyhow::Result<()> {
     println!(
         r#"
@@ -219,7 +279,7 @@ async fn cmd_serve(
     tracing::info!(plugins = plugin_count, "Plugins scanned");
 
     // Initialize storage (PostgreSQL or SQLite based on URL)
-    let url = db_url.unwrap_or_else(|| format!("sqlite://{}/z8run.db?mode=rwc", data_dir));
+    let url = db_url.unwrap_or_else(|| sqlite_url(data_dir));
 
     // Secrets: from the environment, or generated on first start and kept in
     // the data directory so sessions and the vault survive restarts.
@@ -317,7 +377,11 @@ async fn cmd_serve(
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!(address = %addr, "Server ready");
     if z8run_api::ui::is_embedded() {
-        tracing::info!("Editor: http://{}:{}", display_host(&bind), port);
+        let url = format!("http://{}:{}", display_host(&bind), port);
+        tracing::info!("Editor: {url}");
+        if open_browser {
+            desktop::open_browser(&url);
+        }
     } else {
         tracing::info!("API only: this build does not include the web editor (feature embed-ui)");
     }
@@ -337,7 +401,7 @@ async fn cmd_serve(
 /// Run database migrations.
 async fn cmd_migrate(db_url: Option<String>, data_dir: &str) -> anyhow::Result<()> {
     std::fs::create_dir_all(data_dir)?;
-    let url = db_url.unwrap_or_else(|| format!("sqlite://{}/z8run.db?mode=rwc", data_dir));
+    let url = db_url.unwrap_or_else(|| sqlite_url(data_dir));
     tracing::info!(url = %mask_db_url(&url), "Running migrations...");
 
     if url.starts_with("postgres") {
@@ -450,6 +514,23 @@ async fn cmd_validate(file: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sqlite_url_survives_special_characters_in_the_path() {
+        use std::str::FromStr;
+        for dir in [
+            "/Users/ana/Library/Application Support/z8run",
+            "C:\\Users\\ana#1\\AppData\\Roaming\\z8run",
+            "/home/100%?/z8run",
+        ] {
+            let opts = sqlx::sqlite::SqliteConnectOptions::from_str(&sqlite_url(dir)).unwrap();
+            assert_eq!(
+                opts.get_filename(),
+                std::path::Path::new(&format!("{dir}/z8run.db")),
+                "{dir}"
+            );
+        }
+    }
 
     #[test]
     fn mask_db_url_masks_password() {
