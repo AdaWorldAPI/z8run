@@ -107,8 +107,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Pinned: the binary links against the runner's glibc and then
+          # needs that version or newer. ubuntu-latest moves to Ubuntu 26
+          # on 2026-10-19, which would stop it running on 22.04/24.04 and
+          # Debian 12. Keep this on the oldest supported LTS runner.
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-24.04
             artifact: z8run-linux-x86_64
           - target: aarch64-apple-darwin
             os: macos-latest
