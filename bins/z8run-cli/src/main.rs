@@ -3,6 +3,8 @@
 //! Main entry point for the z8run flow engine.
 //! Manages the server, migrations, plugins and system information.
 
+mod secrets;
+
 use clap::{Parser, Subcommand};
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
@@ -211,35 +213,27 @@ async fn cmd_serve(
     // Initialize storage (PostgreSQL or SQLite based on URL)
     let url = db_url.unwrap_or_else(|| format!("sqlite://{}/z8run.db?mode=rwc", data_dir));
 
-    // JWT secret: required in production, auto-generated for development
-    let jwt_secret = match std::env::var("Z8_JWT_SECRET") {
-        Ok(secret) if !secret.is_empty() => {
-            tracing::info!("JWT secret loaded from Z8_JWT_SECRET");
-            secret
-        }
-        _ => {
-            if url.starts_with("postgres") || url.starts_with("mysql") {
-                anyhow::bail!(
-                    "Z8_JWT_SECRET is required when using PostgreSQL or MySQL. \
-                     Generate one with: openssl rand -base64 32"
-                );
-            }
-            let dev_secret: String = (0..32)
-                .map(|_| format!("{:02x}", rand::random::<u8>()))
-                .collect();
-            tracing::warn!(
-                "No Z8_JWT_SECRET set - generated ephemeral secret (tokens won't survive restarts)"
-            );
-            dev_secret
-        }
-    };
-    // Z8_VAULT_SECRET falls back to the JWT secret when unset. Validate the
-    // effective value that will actually be used for the vault.
-    let vault_secret = std::env::var("Z8_VAULT_SECRET").unwrap_or_else(|_| jwt_secret.clone());
+    // Secrets: from the environment, or generated on first start and kept in
+    // the data directory so sessions and the vault survive restarts.
+    let is_production_db = url.starts_with("postgres") || url.starts_with("mysql");
+    if is_production_db && std::env::var("Z8_JWT_SECRET").map_or(true, |s| s.is_empty()) {
+        // Several instances may share this database; each would generate its
+        // own key, so production secrets must come from the environment.
+        anyhow::bail!(
+            "Z8_JWT_SECRET is required when using PostgreSQL or MySQL. \
+             Generate one with: openssl rand -base64 32"
+        );
+    }
+    let secrets::Secrets {
+        jwt: jwt_secret,
+        jwt_source,
+        vault: vault_secret,
+        vault_source,
+    } = secrets::resolve(std::path::Path::new(data_dir))?;
+    tracing::info!(jwt = ?jwt_source, vault = ?vault_source, "Secrets loaded");
 
     // Reject known-weak/default secrets before startup.
     // Production databases (PostgreSQL/MySQL) hard-fail; SQLite (dev) only warns.
-    let is_production_db = url.starts_with("postgres") || url.starts_with("mysql");
     if is_production_db {
         validate_production_secret("Z8_JWT_SECRET", &jwt_secret)?;
         validate_production_secret("Z8_VAULT_SECRET", &vault_secret)?;
