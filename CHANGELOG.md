@@ -45,6 +45,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/) and this 
 - A plugin named like a built-in node replaced it for every flow; such names are now refused at install and at startup
 
 ### Security
+- Dependency advisories found by `cargo audit`: rustls 0.23.45 (RUSTSEC-2026-0285), wasmtime 48 (RUSTSEC-2026-0222, RUSTSEC-2026-0269), event-listener 5.4.2; `rsa` (RUSTSEC-2023-0071, no fix available, no private-key RSA use) and rumqttc's `rustls-webpki` 0.102 (RUSTSEC-2026-0049) reviewed and documented in `.cargo/audit.toml`
 - Webhooks are bound to their trigger node and deployed snapshot, run only that branch, and reject unknown auth types (A-01, A-05)
 - Stopping a flow checks ownership and takes its hooks offline (A-02)
 - Flow nodes can no longer reach loopback, private or cloud-metadata addresses by default; the database node is confined (A-03, A-04)
