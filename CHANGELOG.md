@@ -22,6 +22,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/) and this 
 - Plugin manifests can declare default node settings in a `[config]` table
 
 ### Changed
+- CI, release and Docker builds use Node 24 LTS, read from `.node-version` (the app still supports Node 22+); CI jobs run on a fixed `ubuntu-24.04` instead of `ubuntu-latest`
+- The editor validates server responses with Zod schemas, and their TypeScript types are derived from those schemas
 - Without `Z8_JWT_SECRET`/`Z8_VAULT_SECRET`, generated secrets are kept in `<data dir>/secrets/` instead of changing on every start
 - Nginx overwrites `X-Forwarded-For`; `deploy/nginx.conf` documents direct and Cloudflare setups
 - **Deployed hook flows must be redeployed** after upgrading (hooks now run a deployed snapshot)

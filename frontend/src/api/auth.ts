@@ -1,4 +1,5 @@
-import { assertAuthResponse } from "@/lib/validation";
+import { UserInfoSchema } from "@/lib/schemas";
+import { assertAuthResponse, assertSessionResponse } from "@/lib/validation";
 import ky from "ky";
 
 const authApi = ky.create({
@@ -8,21 +9,7 @@ const authApi = ky.create({
   credentials: "include",
 });
 
-export interface AuthResponse {
-  user: {
-    id: string;
-    email: string;
-    username: string;
-    roles: string[];
-  };
-}
-
-export interface UserInfo {
-  id: string;
-  email: string;
-  username: string;
-  roles: string[];
-}
+export type { AuthResponse, UserInfo } from "@/lib/schemas";
 
 export const authService = {
   register: (email: string, username: string, password: string) =>
@@ -38,11 +25,16 @@ export const authService = {
       .then(assertAuthResponse),
 
   // Auth is carried by the session cookie; no token argument needed.
-  me: () => authApi.get("me").json<UserInfo>(),
+  me: () =>
+    authApi
+      .get("me")
+      .json<unknown>()
+      .then((v) => UserInfoSchema.parse(v)),
 
   // Session probe used on load: always 200 with { user } (null if not signed
   // in), so the browser console stays clean.
-  session: () => authApi.get("session").json<{ user: UserInfo | null }>(),
+  session: () =>
+    authApi.get("session").json<unknown>().then(assertSessionResponse),
 
   logout: () => authApi.post("logout").json<{ status: string }>(),
 };

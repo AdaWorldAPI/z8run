@@ -48,54 +48,17 @@ export interface Z8NodeData {
   outputs: PortDefinition[];
 }
 
-export interface FlowSummary {
-  id: string;
-  name: string;
-  description: string;
-  /** Derived from the last execution when the flow has run, else the stored status. */
-  status: string;
-  /** ISO timestamp of the last execution, or null if it has never run. */
-  last_run_at: string | null;
-  nodes: number;
-  edges: number;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface FlowListResponse {
-  flows: FlowSummary[];
-  total: number;
-}
-
-export interface FlowDetail {
-  id: string;
-  name: string;
-  description: string;
-  version: string;
-  status: string;
-  /** True while the flow's public hooks are live (deployed snapshot exists). */
-  deployed?: boolean;
-  nodes: unknown[];
-  edges: unknown[];
-  canvas_nodes: unknown[];
-  canvas_edges: unknown[];
-  viewport: { x: number; y: number; zoom: number };
-  config: unknown;
-  created_at: string;
-  updated_at: string;
-}
+// Server response types are derived from their runtime schemas.
+export type {
+  CreateFlowResponse,
+  FlowDetail,
+  FlowListResponse,
+  FlowSummary,
+} from "@/lib/schemas";
 
 export interface CreateFlowRequest {
   name: string;
   description?: string;
-}
-
-export interface CreateFlowResponse {
-  id: string;
-  name: string;
-  description: string;
-  status: string;
-  created_at: string;
 }
 
 /** Port type color mapping */

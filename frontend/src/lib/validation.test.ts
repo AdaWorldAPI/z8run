@@ -101,3 +101,36 @@ describe("engine events", () => {
     expect(parseEngineEvent(raw)).toBeNull();
   });
 });
+
+describe("schemas", () => {
+  it("accepts a signed-out session and rejects a malformed user", async () => {
+    const { assertSessionResponse } = await import("./validation");
+    expect(assertSessionResponse({ user: null }).user).toBeNull();
+    expect(() => assertSessionResponse({ user: { id: 1 } })).toThrow(
+      /Invalid session response/,
+    );
+  });
+
+  it("keeps fields the server adds later", () => {
+    const list = assertFlowList({
+      flows: [{ ...flow, tags: ["chain:1"] }],
+      total: 1,
+    });
+    expect((list.flows[0] as Record<string, unknown>).tags).toEqual([
+      "chain:1",
+    ]);
+  });
+
+  it("normalizes plugin entries", async () => {
+    const { PluginEntrySchema } = await import("./schemas");
+    const entry = PluginEntrySchema.parse({
+      type: "echo",
+      inputs: [{ id: "in", name: "in", type: "table" }],
+    });
+    expect(entry.inputs[0]?.type).toBe("any");
+    expect(entry.inputs[0]?.required).toBe(false);
+    expect(entry.outputs).toEqual([]);
+    expect(entry.defaultConfig).toEqual({});
+    expect(PluginEntrySchema.safeParse({ type: "" }).success).toBe(false);
+  });
+});

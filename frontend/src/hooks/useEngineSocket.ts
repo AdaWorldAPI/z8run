@@ -1,29 +1,11 @@
+import type { EngineEvent } from "@/lib/schemas";
 import { parseEngineEvent } from "@/lib/validation";
 import { useFlowStore } from "@/stores/flowStore";
 import { useEffect } from "react";
 import { create } from "zustand";
 
-/** Engine event received from the WebSocket. */
-export interface EngineEvent {
-  type: string;
-  flow_id?: string;
-  trace_id?: string;
-  node_id?: string;
-  from_node?: string;
-  to_node?: string;
-  message_id?: string;
-  duration_us?: number;
-  duration_ms?: number;
-  error?: string;
-  /** Payload preview for message_sent events */
-  payload?: unknown;
-  /** Output preview for node_completed events */
-  output?: unknown;
-  /** Streaming chunk for stream_chunk events */
-  chunk?: string;
-  /** Whether streaming is complete for stream_chunk events */
-  done?: boolean;
-}
+/** Engine event received from the WebSocket (validated by its schema). */
+export type { EngineEvent } from "@/lib/schemas";
 
 interface EngineLogEntry {
   id: number;
