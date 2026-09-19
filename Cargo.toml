@@ -7,7 +7,6 @@ members = [
     "crates/z8run-runtime",
     "crates/z8run-api",
     "bins/z8run-cli",
-    "bins/z8run-server",
 ]
 
 [workspace.package]
@@ -96,9 +95,6 @@ clap = { version = "4.6", features = ["derive", "env"] }
 # Error handling
 thiserror = "2"
 anyhow = "1.0"
-
-# Embed frontend
-rust-embed = "8"
 
 # Config
 config = "0.15"
