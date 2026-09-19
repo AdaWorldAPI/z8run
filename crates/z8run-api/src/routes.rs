@@ -338,12 +338,22 @@ async fn get_flow(
         .cloned()
         .unwrap_or(serde_json::json!({"x": 0, "y": 0, "zoom": 1}));
 
+    // Whether this flow's public hooks are live, so the UI can offer to stop
+    // them (a deployed hook flow is idle between requests, not "running").
+    let deployed = state
+        .storage
+        .get_deployment(id)
+        .await
+        .map_err(ApiError::from)?
+        .is_some();
+
     Ok(Json(serde_json::json!({
         "id": flow.id.to_string(),
         "name": flow.name,
         "description": flow.description,
         "version": flow.version,
         "status": flow.status.to_string(),
+        "deployed": deployed,
         "nodes": flow.nodes,
         "edges": flow.edges,
         "canvas_nodes": canvas_nodes,
