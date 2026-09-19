@@ -4,6 +4,7 @@
 //! Manages the server, migrations, plugins and system information.
 
 mod desktop;
+mod init;
 mod secrets;
 
 use clap::{Parser, Subcommand};
@@ -45,6 +46,24 @@ enum Commands {
         /// Database URL (sqlite://./data/z8run.db or postgres://...)
         #[arg(long, env = "Z8_DB_URL")]
         db_url: Option<String>,
+    },
+
+    /// Choose the database and port, and save them for later starts
+    ///
+    /// Writes <data dir>/z8run.env. Without flags it asks interactively.
+    /// Examples:
+    ///   z8run init
+    ///   z8run init --db-url postgres://user:pass@localhost:5432/z8run --port 8080
+    Init {
+        /// Database URL to use instead of asking
+        #[arg(long)]
+        db_url: Option<String>,
+        /// Port to use instead of asking (default 7700)
+        #[arg(long)]
+        port: Option<u16>,
+        /// Replace an existing config without asking
+        #[arg(long)]
+        force: bool,
     },
 
     /// Run database migrations
@@ -100,7 +119,11 @@ async fn main() -> anyhow::Result<()> {
     // Load .env file (silently ignore if not found)
     dotenvy::dotenv().ok();
 
+    // Then the saved `z8run init` answers, without overriding anything set
+    // already. Parse again so arguments backed by env vars see them.
     let cli = Cli::parse();
+    let config_loaded = init::load(std::path::Path::new(&data_dir_for(&cli)))?;
+    let cli = if config_loaded { Cli::parse() } else { cli };
 
     // Configure tracing
     tracing_subscriber::fmt()
@@ -123,10 +146,29 @@ async fn main() -> anyhow::Result<()> {
     result
 }
 
+/// Data directory for the command: `--data-dir`/`Z8_DATA_DIR` if given, else
+/// the per-user directory for desktop mode and `init`, else `./data`.
+fn data_dir_for(cli: &Cli) -> String {
+    match (&cli.data_dir, &cli.command) {
+        (Some(dir), _) => dir.clone(),
+        (None, None | Some(Commands::Init { .. })) => {
+            desktop::default_data_dir().to_string_lossy().into_owned()
+        }
+        (None, Some(_)) => "./data".to_string(),
+    }
+}
+
 async fn run(cli: Cli) -> anyhow::Result<()> {
-    let data_dir = cli.data_dir.clone().unwrap_or_else(|| "./data".to_string());
+    let data_dir = data_dir_for(&cli);
     match cli.command {
-        None => cmd_desktop(cli.data_dir).await?,
+        None => cmd_desktop(data_dir).await?,
+        Some(Commands::Init {
+            db_url,
+            port,
+            force,
+        }) => {
+            init::run(std::path::Path::new(&data_dir), db_url, port, force).await?;
+        }
         Some(Commands::Serve { port, bind, db_url }) => {
             cmd_serve(port, bind, db_url, &data_dir, false).await?;
         }
@@ -149,7 +191,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
 
 /// Desktop mode (no subcommand). Honors the same environment variables as
 /// `serve`, with local-only defaults.
-async fn cmd_desktop(data_dir: Option<String>) -> anyhow::Result<()> {
+async fn cmd_desktop(data_dir: String) -> anyhow::Result<()> {
     let env = |name: &str| std::env::var(name).ok().filter(|v| !v.trim().is_empty());
     let port: u16 = match env("Z8_PORT") {
         Some(p) => p
@@ -170,20 +212,20 @@ async fn cmd_desktop(data_dir: Option<String>) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let data_dir =
-        data_dir.unwrap_or_else(|| desktop::default_data_dir().to_string_lossy().into_owned());
-    cmd_serve(port, bind, env("Z8_DB_URL"), &data_dir, open).await
+    let db_url = env("Z8_DB_URL");
+    if db_url.is_none() {
+        println!(
+            "Using SQLite in {data_dir}. Run `z8run init` to choose another file or PostgreSQL."
+        );
+    }
+    cmd_serve(port, bind, db_url, &data_dir, open).await
 }
 
 /// Default SQLite URL for `data_dir`. sqlx percent-decodes the path, so the
 /// characters that would change its meaning (`%`, `?`, `#`) are encoded; a
 /// Windows user name like `ana#1` must not cut the path short.
 fn sqlite_url(data_dir: &str) -> String {
-    let path = format!("{data_dir}/z8run.db")
-        .replace('%', "%25")
-        .replace('?', "%3F")
-        .replace('#', "%23");
-    format!("sqlite://{path}?mode=rwc")
+    init::sqlite_file_url(&format!("{data_dir}/z8run.db"))
 }
 
 /// Host to show in the editor URL: a wildcard bind is reachable locally.
