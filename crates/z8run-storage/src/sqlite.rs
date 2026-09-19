@@ -413,7 +413,7 @@ impl ExecutionRepository for SqliteStorage {
             r#"
             UPDATE executions
             SET status = ?1, completed_at = ?2, duration_ms = ?3, error = ?4
-            WHERE id = ?5
+            WHERE id = ?5 AND status = 'running'
             "#,
         )
         .bind(status)
@@ -425,6 +425,29 @@ impl ExecutionRepository for SqliteStorage {
         .await?;
 
         Ok(())
+    }
+
+    async fn interrupt_running(
+        &self,
+        started_before: chrono::DateTime<chrono::Utc>,
+        reason: &str,
+    ) -> Result<u64, StorageError> {
+        let now = chrono::Utc::now().to_rfc3339();
+        // julianday() compares instants; the stored RFC 3339 strings don't
+        // all have the same number of fractional digits.
+        let result = sqlx::query(
+            r#"
+            UPDATE executions
+            SET status = 'stopped', completed_at = ?1, error = ?2
+            WHERE status = 'running' AND julianday(started_at) < julianday(?3)
+            "#,
+        )
+        .bind(&now)
+        .bind(reason)
+        .bind(started_before.to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
     }
 
     async fn get_history(
@@ -770,6 +793,77 @@ mod tests {
                 .unwrap()
                 .map(|f| f.name),
             Some("original".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_terminal_states_stick_and_stale_runs_are_closed() {
+        let storage = memory_storage().await;
+        let owner = Uuid::now_v7();
+        storage
+            .create_user(&UserRecord {
+                id: owner,
+                email: "runs@example.com".to_string(),
+                username: "runs".to_string(),
+                password_hash: "x".to_string(),
+                roles: vec!["user".to_string()],
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            })
+            .await
+            .unwrap();
+        let flow = Flow::new("runs");
+        storage.save_flow_with_user(&flow, owner).await.unwrap();
+        let status = |id: Uuid| {
+            let storage = &storage;
+            async move {
+                storage
+                    .get_history(flow.id, 10)
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .find(|e| e.id == id)
+                    .map(|e| (e.status, e.error))
+                    .unwrap()
+            }
+        };
+
+        // A terminal state is not overwritten by a later event.
+        let stopped = storage.record_start(flow.id, Uuid::now_v7()).await.unwrap();
+        storage
+            .record_completion(stopped, "stopped", 5, None)
+            .await
+            .unwrap();
+        storage
+            .record_completion(stopped, "completed", 9, None)
+            .await
+            .unwrap();
+        assert_eq!(status(stopped).await.0, "stopped");
+
+        // Startup reconciliation closes only runs started before the cutoff.
+        let stale = storage.record_start(flow.id, Uuid::now_v7()).await.unwrap();
+        assert_eq!(
+            storage
+                .interrupt_running(chrono::Utc::now() - chrono::Duration::hours(1), "x")
+                .await
+                .unwrap(),
+            0,
+            "nothing started an hour ago"
+        );
+        let closed = storage
+            .interrupt_running(
+                chrono::Utc::now() + chrono::Duration::seconds(1),
+                "interrupted",
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            closed, 1,
+            "only the running one; the stopped one is untouched"
+        );
+        assert_eq!(
+            status(stale).await,
+            ("stopped".to_string(), Some("interrupted".to_string()))
         );
     }
 }

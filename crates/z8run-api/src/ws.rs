@@ -168,6 +168,16 @@ fn event_to_json(event: &EngineEvent) -> serde_json::Value {
             "trace_id": trace_id.to_string(),
             "error": error,
         }),
+        EngineEvent::FlowStopped {
+            flow_id,
+            trace_id,
+            duration_ms,
+        } => serde_json::json!({
+            "type": "flow_stopped",
+            "flow_id": flow_id.to_string(),
+            "trace_id": trace_id.to_string(),
+            "duration_ms": duration_ms,
+        }),
         EngineEvent::StreamChunk {
             flow_id,
             node_id,

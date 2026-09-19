@@ -399,7 +399,7 @@ impl ExecutionRepository for PgStorage {
             r#"
             UPDATE executions
             SET status = $1, completed_at = NOW(), duration_ms = $2, error = $3
-            WHERE id = $4
+            WHERE id = $4 AND status = 'running'
             "#,
         )
         .bind(status)
@@ -410,6 +410,25 @@ impl ExecutionRepository for PgStorage {
         .await?;
 
         Ok(())
+    }
+
+    async fn interrupt_running(
+        &self,
+        started_before: chrono::DateTime<chrono::Utc>,
+        reason: &str,
+    ) -> Result<u64, StorageError> {
+        let result = sqlx::query(
+            r#"
+            UPDATE executions
+            SET status = 'stopped', completed_at = NOW(), error = $1
+            WHERE status = 'running' AND started_at < $2
+            "#,
+        )
+        .bind(reason)
+        .bind(started_before)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
     }
 
     async fn get_history(

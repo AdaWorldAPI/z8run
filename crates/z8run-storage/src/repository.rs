@@ -140,7 +140,9 @@ pub trait ExecutionRepository: Send + Sync {
     /// Records the start of an execution.
     async fn record_start(&self, flow_id: Uuid, trace_id: Uuid) -> Result<Uuid, StorageError>;
 
-    /// Records the completion of an execution.
+    /// Records the end of an execution (`completed`, `error` or `stopped`).
+    /// Only a `running` execution is updated, so a late or duplicate event
+    /// can't overwrite a terminal state.
     async fn record_completion(
         &self,
         execution_id: Uuid,
@@ -148,6 +150,17 @@ pub trait ExecutionRepository: Send + Sync {
         duration_ms: u64,
         error: Option<&str>,
     ) -> Result<(), StorageError>;
+
+    /// Marks executions still `running` that started before `started_before`
+    /// as `stopped` with `reason`, returning how many were updated. Called at
+    /// startup: those runs belonged to a previous process (crash, restart,
+    /// or a dropped terminal event). Assumes one z8run process per database,
+    /// which the in-memory engine and hook state already require.
+    async fn interrupt_running(
+        &self,
+        started_before: chrono::DateTime<chrono::Utc>,
+        reason: &str,
+    ) -> Result<u64, StorageError>;
 
     /// Gets the execution history of a flow.
     async fn get_history(

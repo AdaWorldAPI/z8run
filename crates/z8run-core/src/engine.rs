@@ -67,6 +67,13 @@ pub enum EngineEvent {
         trace_id: Uuid,
         error: String,
     },
+    /// An execution was cancelled (flow stopped, or its caller gave up, e.g.
+    /// a webhook timeout). Terminal, like `FlowCompleted` and `FlowError`.
+    FlowStopped {
+        flow_id: Uuid,
+        trace_id: Uuid,
+        duration_ms: u64,
+    },
 }
 
 impl EngineEvent {
@@ -84,7 +91,8 @@ impl EngineEvent {
             | EngineEvent::MessageSent { flow_id, .. }
             | EngineEvent::StreamChunk { flow_id, .. }
             | EngineEvent::FlowCompleted { flow_id, .. }
-            | EngineEvent::FlowError { flow_id, .. } => *flow_id,
+            | EngineEvent::FlowError { flow_id, .. }
+            | EngineEvent::FlowStopped { flow_id, .. } => *flow_id,
         }
     }
 }
@@ -470,11 +478,18 @@ impl FlowEngine {
                 .await;
 
             if cancel.is_cancelled() {
-                // The flow was stopped by the user. `stop()` already set the
-                // status to `Stopped`; do NOT override it with Completed/Error
-                // and do NOT emit a terminal completion/error event. The entry
-                // is still removed below (FUNC-005).
-                info!(flow_id = %flow_id, "Flow execution cancelled by stop()");
+                // Stopped by the user or by a caller that gave up (webhook
+                // timeout). `stop()`/`cancel_execution()` already set the
+                // status to `Stopped`; don't override it with Completed/Error,
+                // but do emit a terminal event so the execution history
+                // doesn't show it as running forever (R-02). The entry is
+                // still removed below (FUNC-005).
+                info!(flow_id = %flow_id, "Flow execution cancelled");
+                let _ = engine.event_tx.send(EngineEvent::FlowStopped {
+                    flow_id,
+                    trace_id,
+                    duration_ms: start.elapsed().as_millis() as u64,
+                });
             } else {
                 match result {
                     Ok(()) => {

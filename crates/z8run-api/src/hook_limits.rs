@@ -65,6 +65,21 @@ impl HookLimits {
         };
         semaphore.try_acquire_owned().ok()
     }
+
+    /// Forgets a flow's slots once its hooks are retired, so flows that are
+    /// created and deleted don't accumulate entries (R-07). Calls already in
+    /// progress keep their permit (it owns the semaphore) and finish normally.
+    pub fn release(&self, flow_id: Uuid) {
+        self.slots
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&flow_id);
+    }
+
+    /// Flows currently tracked (for tests and diagnostics).
+    pub fn tracked_flows(&self) -> usize {
+        self.slots.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
 }
 
 #[cfg(test)]
@@ -100,5 +115,19 @@ mod tests {
             limits.try_acquire(flow_a).is_some(),
             "a freed slot is reusable"
         );
+    }
+
+    #[test]
+    fn released_flows_are_forgotten_without_breaking_calls_in_progress() {
+        let limits = limits(1);
+        let (flow_a, flow_b) = (Uuid::now_v7(), Uuid::now_v7());
+        let in_progress = limits.try_acquire(flow_a).expect("slot");
+        let _b = limits.try_acquire(flow_b);
+        assert_eq!(limits.tracked_flows(), 2);
+
+        limits.release(flow_a);
+        assert_eq!(limits.tracked_flows(), 1);
+        drop(in_progress); // releasing its permit after removal is fine
+        assert_eq!(limits.tracked_flows(), 1);
     }
 }

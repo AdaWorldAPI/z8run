@@ -328,6 +328,23 @@ async fn hook_and_flow_ownership_security() {
         !still_running,
         "a timed-out hook execution must be cancelled, not keep running for 3s"
     );
+    // R-02: the history records it as stopped instead of running forever.
+    let mut last_status = String::new();
+    for _ in 0..40 {
+        let history = state.executions.get_history(slow_id, 1).await.unwrap();
+        last_status = history
+            .first()
+            .map(|e| e.status.clone())
+            .unwrap_or_default();
+        if last_status != "running" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert_eq!(
+        last_status, "stopped",
+        "a cancelled run must not stay running"
+    );
 
     // Concurrency limit 1: while one slow call holds the slot, a second is 429.
     let (first, second) = tokio::join!(hook(&app, &slow, "/slow", None), async {
@@ -362,6 +379,7 @@ async fn hook_and_flow_ownership_security() {
     );
 
     // The owner can stop it, and stopping retires the public hooks.
+    let tracked_before = state.hook_limits.tracked_flows();
     let (status, _) = send(
         &app,
         "POST",
@@ -376,6 +394,8 @@ async fn hook_and_flow_ownership_security() {
         StatusCode::NOT_FOUND,
         "a stopped flow must stop accepting webhooks"
     );
+    // R-07: its concurrency slots are forgotten too.
+    assert_eq!(state.hook_limits.tracked_flows(), tracked_before - 1);
 
     // ── Duplicate method + path across triggers is an ambiguous deploy.
     let dup = create_flow(

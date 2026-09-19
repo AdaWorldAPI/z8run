@@ -79,6 +79,13 @@ const EVENT_CONFIG: Record<string, EventDisplay> = {
     label: "FLOW ERROR",
     detail: (e, _r) => `Flow failed: ${e.error ?? "Unknown error"}`,
   },
+  flow_stopped: {
+    icon: XCircle,
+    color: "text-amber-400",
+    label: "FLOW STOPPED",
+    detail: (e, _r) =>
+      `Flow stopped${e.duration_ms != null ? ` after ${e.duration_ms}ms` : ""}`,
+  },
   node_started: {
     icon: Zap,
     color: "text-cyan-400",

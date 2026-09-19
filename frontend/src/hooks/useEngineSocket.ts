@@ -175,7 +175,11 @@ export const useEngineStore = create<EngineStore>((set, get) => ({
       set({ running: true });
       pendingNodeEvents = []; // clear any stale queue
       useFlowStore.getState().resetAllNodeStatus();
-    } else if (event.type === "flow_completed" || event.type === "flow_error") {
+    } else if (
+      event.type === "flow_completed" ||
+      event.type === "flow_error" ||
+      event.type === "flow_stopped"
+    ) {
       set({ running: false });
       // Keep success/error visible for 4 seconds, then reset to idle
       if (resetTimer) clearTimeout(resetTimer);

@@ -57,9 +57,25 @@ pub fn spawn(mut events: Receiver<EngineEvent>, executions: Arc<dyn ExecutionRep
                         }
                     }
                 }
+                Ok(EngineEvent::FlowStopped {
+                    trace_id,
+                    duration_ms,
+                    ..
+                }) => {
+                    if let Some(execution_id) = in_flight.remove(&trace_id) {
+                        if let Err(e) = executions
+                            .record_completion(execution_id, "stopped", duration_ms, None)
+                            .await
+                        {
+                            warn!(error = %e, "Failed to record stopped execution");
+                        }
+                    }
+                }
                 // Node-level events are not persisted here.
                 Ok(_) => {}
                 Err(RecvError::Lagged(n)) => {
+                    // Runs whose terminal event was dropped stay "running"
+                    // until the next start reconciles them.
                     warn!(
                         missed = n,
                         "Execution recorder lagged; some runs may be unrecorded"

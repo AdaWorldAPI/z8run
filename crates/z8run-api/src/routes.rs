@@ -427,6 +427,7 @@ async fn delete_flow(
         .delete_flow_for_user(id, claims.sub)
         .await
         .map_err(ApiError::from)?;
+    state.hook_limits.release(id);
 
     Ok(Json(serde_json::json!({
         "deleted": id.to_string(),
@@ -495,6 +496,7 @@ async fn start_flow(
             .undeploy_flow(id)
             .await
             .map_err(ApiError::from)?;
+        state.hook_limits.release(id);
 
         let trace_id = state
             .engine
@@ -872,6 +874,7 @@ async fn stop_flow(
         .undeploy_flow(id)
         .await
         .map_err(ApiError::from)?;
+    state.hook_limits.release(id);
     Ok(Json(serde_json::json!({
         "flow_id": id.to_string(),
         "status": "stopped",

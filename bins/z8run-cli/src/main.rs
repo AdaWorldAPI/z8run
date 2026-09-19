@@ -397,6 +397,24 @@ async fn cmd_serve(
     };
     tracing::info!("Credential vault initialized");
 
+    // Runs left "running" by a previous process (crash, restart, a dropped
+    // terminal event) can never finish now: close them so the history
+    // doesn't show them in progress forever (R-02).
+    match executions
+        .interrupt_running(
+            chrono::Utc::now(),
+            "Interrupted: the server stopped while this run was in progress",
+        )
+        .await
+    {
+        Ok(0) => {}
+        Ok(n) => tracing::warn!(
+            executions = n,
+            "Closed runs interrupted by a previous shutdown"
+        ),
+        Err(e) => tracing::warn!(error = %e, "Could not reconcile interrupted runs"),
+    }
+
     // Create application state
     let state = Arc::new(z8run_api::state::AppState::new(
         storage,

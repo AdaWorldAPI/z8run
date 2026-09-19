@@ -27,6 +27,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/) and this 
 - The editor no longer loads fonts from Google Fonts
 
 ### Fixed
+- Stopped flows and timed-out webhook runs stayed "running" forever in the execution history; they are now recorded as `stopped`, terminal states can't be overwritten, and runs left open by a previous shutdown are closed at startup (R-02)
+- The webhook limiter kept an entry for every flow ever called; entries are dropped when a flow is stopped, redeployed without hooks or deleted (R-07)
 - Restarting a SQLite install logged everyone out and made vault credentials unreadable
 - Stop button disabled for deployed hook flows; "(unsaved)" shown right after opening a flow
 - Release builds on macOS 27 (proc-macros were stripped)
@@ -48,6 +50,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/) and this 
 - Database node connections go to the IP address that passed the egress check, so a DNS answer that changes afterwards can't redirect them (TLS that verifies the server name keeps the name) (R-01)
 - Database node errors no longer include credentials: the output shows only type, host, port and database, and the driver's error is reduced to its category (R-04)
 - `docker-compose.yml` passes `Z8_COOKIE_SECURE` to the backend, `true` by default, so the session cookie is only sent over HTTPS (R-03)
+- Plugin calls share a process-wide pool (`Z8_PLUGIN_MAX_CONCURRENCY`, default: CPU cores); a call that can't get a slot within its time limit is refused instead of queueing without bound (R-06)
 - WASM plugins run with a CPU budget, a time limit and an enforced memory cap (`Z8_PLUGIN_FUEL`, `Z8_PLUGIN_TIMEOUT_MS`, `Z8_PLUGIN_MAX_MEMORY_MB`), off the async runtime; a manifest can no longer raise its own memory limit (A-10)
 
 ### Removed
