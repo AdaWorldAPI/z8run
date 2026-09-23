@@ -11,7 +11,7 @@
 //! | `lance-pivot` | rewrite roles (metadata) | re-view the SAME cells (metadata) |
 //! | `lance-top-k` | set result ordering | re-view with the ordering |
 //! | `lance-execute` | fold (or reuse a cached fold) → result | refused |
-//! | `lance-materialize` | refused | the terminal: JSON / CSV / HTML |
+//! | `lance-materialize` | refused | the data-export terminal: JSON / CSV |
 
 use std::sync::Arc;
 
@@ -53,7 +53,6 @@ enum Op {
 enum Format {
     Json,
     Csv,
-    Html,
 }
 
 struct Resolver<'a> {
@@ -237,14 +236,23 @@ impl Resolver<'_> {
                     .unwrap_or(true),
             }),
             "lance-execute" => Op::Execute,
-            "lance-materialize" => Op::Materialize(
-                match cfg.get("format").and_then(Value::as_str).unwrap_or("json") {
-                    "json" => Format::Json,
-                    "csv" => Format::Csv,
-                    "html" => Format::Html,
-                    o => return Err(err(format!("unknown format '{o}'"))),
-                },
-            ),
+            "lance-materialize" => {
+                Op::Materialize(
+                    match cfg.get("format").and_then(Value::as_str).unwrap_or("json") {
+                        "json" => Format::Json,
+                        "csv" => Format::Csv,
+                        // Paged / screen output is not the reporting engine's: a
+                        // report becomes a paper through OGAR composition (an
+                        // ObjectSlot naming the result; lance-graph-report-ogar).
+                        "html" | "typst" | "pdf" => return Err(err(
+                            "lance-materialize exports data (json/csv); paged or screen output \
+                             goes through OGAR composition (an ObjectSlot on the report, see \
+                             lance-graph-report-ogar)",
+                        )),
+                        o => return Err(err(format!("unknown format '{o}'"))),
+                    },
+                )
+            }
             other => return Err(err(format!("not a lance node type '{other}'"))),
         })
     }
@@ -341,7 +349,6 @@ impl LanceNode {
                         json!({ "format": "json", "body": serde_json::from_str::<Value>(&s).map_err(|e| err(e.to_string()))? })
                     }
                     Format::Csv => json!({ "format": "csv", "body": t.csv(&r).0 }),
-                    Format::Html => json!({ "format": "html", "body": t.html(&r).0 }),
                 };
                 Ok(vec![msg.derive(msg.source_node, "output", payload)])
             }

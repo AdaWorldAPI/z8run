@@ -233,3 +233,23 @@ async fn materialize_refuses_a_plan_handle() {
         .to_string()
         .contains("needs a result handle"));
 }
+
+#[tokio::test]
+async fn paged_output_is_refused_and_points_at_ogar_composition() {
+    let reg = registry(100);
+    let e = match factory("lance-materialize", &reg)
+        .create(json!({"format": "html"}))
+        .await
+    {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("html must not configure"),
+    };
+    assert!(e.contains("OGAR composition"), "{e}");
+    // Stay-silent twin: the data-export formats still configure.
+    for f in ["json", "csv"] {
+        assert!(factory("lance-materialize", &reg)
+            .create(json!({ "format": f }))
+            .await
+            .is_ok());
+    }
+}

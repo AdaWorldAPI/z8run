@@ -14,8 +14,10 @@
 //! rewrites an immutable `Arc<ReportPlan>` and emits a new handle; the
 //! execute node folds in lance-graph and emits a result handle; only the
 //! `lance-materialize` node — the explicit terminal boundary — turns a result
-//! into text (JSON / CSV / HTML), resolving labels through CAM for the
-//! presented members only.
+//! into exported data (JSON / CSV), resolving labels through CAM for the
+//! presented members only. Paged and screen output (HTML, Typst → PDF) is
+//! not a report node's job: the result is embedded in an OGAR composition by
+//! reference and rendered by OGAR's renderers (`lance-graph-report-ogar`).
 //!
 //! **Never transpose data to pivot. Transpose meaning.** `lance-pivot` on a
 //! plan handle rewrites roles; on a result handle it re-views the SAME
