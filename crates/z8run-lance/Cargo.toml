@@ -1,0 +1,19 @@
+[package]
+name = "z8run-lance"
+description = "Native z8run nodes over the lance-graph ABI/SoA reporting substrate: FlowMessages carry tiny handles, never populations."
+version = "0.2.0"
+edition = "2021"
+license = "Apache-2.0 OR MIT"
+publish = false
+
+# Excluded from the z8run workspace (see the root Cargo.toml): the sibling
+# path below is a fleet checkout, never crates.io.
+[dependencies]
+z8run-core = { path = "../z8run-core" }
+lance-graph-report = { path = "../../../lance-graph/crates/lance-graph-report" }
+serde_json = "1.0"
+async-trait = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1.50", features = ["macros", "rt-multi-thread"] }
+uuid = { version = "1.23", features = ["v7"] }

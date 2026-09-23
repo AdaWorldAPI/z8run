@@ -7,6 +7,12 @@ members = [
     "crates/z8run-api",
     "bins/z8run-cli",
 ]
+# z8run-lance path-depends on the sibling AdaWorldAPI/lance-graph checkout
+# (and, through it, AdaWorldAPI/ndarray). It is excluded so the workspace's
+# own CI, which checks out z8run alone, keeps building; build it with
+# `cargo test --manifest-path crates/z8run-lance/Cargo.toml` from a fleet
+# checkout (siblings under the same parent directory).
+exclude = ["crates/z8run-lance"]
 
 [workspace.package]
 version = "0.2.0"

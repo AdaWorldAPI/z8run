@@ -1,0 +1,6 @@
+# This crate compiles the sibling lance-graph / ndarray sources, which pin
+# their toolchain; build it with the same one. (z8run's own workspace keeps
+# the root `stable` pin — this file only applies when building from here.)
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]
