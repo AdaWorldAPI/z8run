@@ -15,16 +15,89 @@
 
 use std::sync::Arc;
 
-use lance_graph_report::render::Terminal;
+use lance_graph_report::render::{Grid, Terminal};
 use lance_graph_report::{
-    AxisRole, CmpOp, CoordSpec, FieldId, MaskId, Measure, MeasureKind, ReportPlan, RowRange,
-    Scalar, Selection, SourceId, SourceRef, TopK,
+    AxisRole, CellValue, CmpOp, CoordSpec, FieldId, MaskId, Measure, MeasureKind, ReportPlan,
+    RowRange, Scalar, Selection, SourceId, SourceRef, TopK,
 };
 use serde_json::{json, Value};
 use z8run_core::engine::{FlowEngine, NodeExecutor, NodeExecutorFactory};
 use z8run_core::{FlowMessage, Z8Error, Z8Result};
 
 use crate::registry::{Envelope, LanceRegistry, Role};
+
+/// The JSON arm of the export boundary: the presented [`Grid`] becomes ONE
+/// structured [`Value`] — the document `Terminal::json` spells as text,
+/// `{"columns":[[..]],"measures":[..],"pages":[{"page":[..],"rows":[{"row":[..],
+/// "cells":[[..]],"total":[..]}]}],"grand_total":[..]}`, built directly rather
+/// than rendered to text and parsed back. The result is materialized once;
+/// a materialization boundary is not a textual-serialization boundary.
+/// `lance-graph-report` stays serde-free by design, so this mapping lives on
+/// the z8run side of the seam, over the grid `Terminal` already hands out.
+pub fn grid_value(g: &Grid) -> Z8Result<Value> {
+    let strs = |v: &[String]| Value::from(v.to_vec());
+    let vals = |v: &[CellValue]| {
+        v.iter()
+            .map(|&c| cell_value(c))
+            .collect::<Z8Result<Vec<_>>>()
+    };
+    let pages = g
+        .pages
+        .iter()
+        .map(|(p, rows)| {
+            let rows = rows
+                .iter()
+                .map(|row| {
+                    let cells = row
+                        .cells
+                        .iter()
+                        .map(|c| vals(c).map(Value::from))
+                        .collect::<Z8Result<Vec<_>>>()?;
+                    Ok(json!({ "row": strs(&row.labels), "cells": cells, "total": vals(&row.total)? }))
+                })
+                .collect::<Z8Result<Vec<_>>>()?;
+            Ok(json!({ "page": strs(p), "rows": rows }))
+        })
+        .collect::<Z8Result<Vec<_>>>()?;
+    Ok(json!({
+        "columns": g.columns.iter().map(|c| strs(c)).collect::<Vec<_>>(),
+        "measures": strs(&g.measures),
+        "pages": pages,
+        "grand_total": vals(&g.grand_total)?,
+    }))
+}
+
+/// One cell, with the number kinds the textual path had: `Terminal` writes
+/// `Int` as `i64::to_string`, `Real` as `f64`'s `Display` and `Null` as
+/// `null`, and a JSON reader turns an integral decimal that fits `u64` /
+/// `i64` into an integer, `-0` and anything wider into a float. The VALUE is
+/// the cell's own, exactly: the text path's read-back could land one ulp off
+/// and, above 2^53, on a different integer (the tests pin both). A
+/// non-finite `Real` (`NaN` / `inf`) was never valid JSON text and is
+/// refused here too.
+fn cell_value(v: CellValue) -> Z8Result<Value> {
+    const TWO_63: f64 = 9_223_372_036_854_775_808.0;
+    Ok(match v {
+        CellValue::Null => Value::Null,
+        CellValue::Int(i) => Value::from(i),
+        CellValue::Real(r) if !r.is_finite() => {
+            return Err(err(format!(
+                "non-finite cell {r} has no JSON representation"
+            )))
+        }
+        CellValue::Real(r)
+            if r.fract() == 0.0
+                && (0.0..2.0 * TWO_63).contains(&r)
+                && !(r == 0.0 && r.is_sign_negative()) =>
+        {
+            Value::from(r as u64)
+        }
+        CellValue::Real(r) if r.fract() == 0.0 && (-TWO_63..0.0).contains(&r) => {
+            Value::from(r as i64)
+        }
+        CellValue::Real(r) => Value::from(r),
+    })
+}
 
 fn err(m: impl Into<String>) -> Z8Error {
     Z8Error::Internal(m.into())
@@ -344,10 +417,7 @@ impl LanceNode {
                     catalog: &cat,
                 };
                 let payload = match fmt {
-                    Format::Json => {
-                        let (s, _) = t.json(&r);
-                        json!({ "format": "json", "body": serde_json::from_str::<Value>(&s).map_err(|e| err(e.to_string()))? })
-                    }
+                    Format::Json => json!({ "format": "json", "body": grid_value(&t.grid(&r))? }),
                     Format::Csv => json!({ "format": "csv", "body": t.csv(&r).0 }),
                 };
                 Ok(vec![msg.derive(msg.source_node, "output", payload)])
